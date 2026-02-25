@@ -1,0 +1,72 @@
+{
+    "name": "codenzia/filament-system-tools",
+    "description": "System administration pages for Filament v4: logs viewer, cache management, database backup & restore, and system info.",
+    "keywords": [
+        "codenzia",
+        "laravel",
+        "filament",
+        "system-tools",
+        "logs",
+        "cache",
+        "database-backup"
+    ],
+    "homepage": "https://github.com/codenzia/filament-system-tools",
+    "support": {
+        "issues": "https://github.com/codenzia/filament-system-tools/issues",
+        "source": "https://github.com/codenzia/filament-system-tools"
+    },
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Codenzia",
+            "email": "support@codenzia.com",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.3",
+        "filament/filament": "^4.0",
+        "filament/tables": "^4.0",
+        "spatie/laravel-package-tools": "^1.15.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.0",
+        "nunomaduro/collision": "^8.0",
+        "orchestra/testbench": "^9.0",
+        "pestphp/pest": "^3.0",
+        "pestphp/pest-plugin-arch": "^3.0",
+        "pestphp/pest-plugin-laravel": "^3.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Codenzia\\FilamentSystemTools\\": "src/",
+            "Codenzia\\FilamentSystemTools\\Database\\Factories\\": "database/factories/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Codenzia\\FilamentSystemTools\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "post-autoload-dump": "@php ./vendor/bin/testbench package:discover --ansi",
+        "test": "vendor/bin/pest",
+        "test-coverage": "vendor/bin/pest --coverage",
+        "format": "vendor/bin/pint"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Codenzia\\FilamentSystemTools\\FilamentSystemToolsServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
