@@ -7,19 +7,19 @@
 
     {{-- Log Files Overview --}}
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Log Files') }}</p>
             <p class="mt-1 text-lg font-semibold text-gray-950 dark:text-white font-mono">{{ count($logFiles) }}</p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Current File') }}</p>
             <p class="mt-1 text-sm font-semibold text-gray-950 dark:text-white font-mono truncate">{{ $logFiles[0]['name'] ?? '—' }}</p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('File Size') }}</p>
             <p class="mt-1 text-lg font-semibold text-gray-950 dark:text-white font-mono">{{ $logFiles[0]['size'] ?? '—' }}</p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Entries Shown') }}</p>
             <p class="mt-1 text-lg font-semibold text-gray-950 dark:text-white font-mono">{{ count($entries) }}</p>
         </div>
@@ -27,7 +27,7 @@
 
     {{-- Log Viewer Card --}}
     <div @if ($this->autoRefresh) wire:poll.10s @endif
-        class="rounded-xl bg-white dark:bg-gray-900 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm overflow-hidden">
+        class="rounded-xl bg-white dark:bg-gray-900 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs overflow-hidden">
         {{-- Controls Bar --}}
         <div class="flex items-center gap-4 px-4 py-3 border-b border-gray-200 dark:border-white/10 flex-wrap">
             <div class="flex items-center gap-2">

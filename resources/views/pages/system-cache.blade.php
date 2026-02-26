@@ -2,25 +2,25 @@
     {{-- System Info Cards --}}
     @php $info = $this->getSystemInfo(); @endphp
     <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('PHP Version') }}</p>
             <p class="mt-1 text-lg font-semibold text-gray-950 dark:text-white font-mono">{{ $info['PHP Version'] }}</p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Laravel Version') }}</p>
             <p class="mt-1 text-lg font-semibold text-gray-950 dark:text-white font-mono">{{ $info['Laravel Version'] }}</p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Environment') }}</p>
             <p class="mt-1 text-lg font-semibold font-mono {{ $info['Environment'] === 'production' ? 'text-danger-600 dark:text-danger-400' : 'text-success-600 dark:text-success-400' }}">
                 {{ ucfirst($info['Environment']) }}
             </p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Cache Driver') }}</p>
             <p class="mt-1 text-lg font-semibold text-gray-950 dark:text-white font-mono">{{ ucfirst($info['Cache Driver']) }}</p>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-4 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ __('Debug Mode') }}</p>
             <p class="mt-1 text-lg font-semibold font-mono {{ $info['Debug Mode'] === 'Enabled' ? 'text-warning-600 dark:text-warning-400' : 'text-gray-950 dark:text-white' }}">
                 {{ __($info['Debug Mode']) }}

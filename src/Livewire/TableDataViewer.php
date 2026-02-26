@@ -12,6 +12,8 @@ use Filament\Forms\Components\Toggle;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
+use Filament\Support\Enums\FontFamily;
+use Filament\Support\Enums\TextSize;
 use Filament\Support\Enums\Width;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
@@ -47,8 +49,8 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
             $column = TextColumn::make($name)
                 ->sortable()
                 ->searchable()
-                ->size('sm')
-                ->fontFamily('mono')
+                ->size(TextSize::Small)
+                ->fontFamily(FontFamily::Mono)
                 ->limit(50)
                 ->tooltip(fn ($state): ?string => is_string($state) && strlen($state) > 50 ? $state : null);
 

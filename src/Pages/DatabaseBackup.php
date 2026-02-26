@@ -9,6 +9,8 @@ use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Support\Enums\FontFamily;
+use Filament\Support\Enums\TextSize;
 use Filament\Support\Enums\Width;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
@@ -56,8 +58,8 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     ->label(__('Table Name'))
                     ->searchable()
                     ->sortable()
-                    ->fontFamily('mono')
-                    ->size('sm'),
+                    ->fontFamily(FontFamily::Mono)
+                    ->size(TextSize::Small),
                 TextColumn::make('rows')
                     ->label(__('Rows'))
                     ->state(fn ($record): int => $record->getRowCount())

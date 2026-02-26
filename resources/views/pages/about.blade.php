@@ -6,7 +6,7 @@
 
     {{-- Release Info Cards --}}
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-5 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-5 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <div class="flex items-center gap-3">
                 <div
                     class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/50 text-primary-600 dark:text-primary-400">
@@ -19,7 +19,7 @@
                 </div>
             </div>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-5 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-5 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <div class="flex items-center gap-3">
                 <div
                     class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-success-100 dark:bg-success-900/50 text-success-600 dark:text-success-400">
@@ -31,7 +31,7 @@
                 </div>
             </div>
         </div>
-        <div class="rounded-xl bg-white dark:bg-gray-900 p-5 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-sm">
+        <div class="rounded-xl bg-white dark:bg-gray-900 p-5 ring-1 ring-gray-950/5 dark:ring-white/10 shadow-xs">
             <div class="flex items-center gap-3">
                 <div
                     class="flex size-10 shrink-0 items-center justify-center rounded-lg bg-warning-100 dark:bg-warning-900/50 text-warning-600 dark:text-warning-400">
@@ -62,8 +62,8 @@
                         <dt class="text-sm text-gray-500 dark:text-gray-400">{{ $label }}</dt>
                         <dd
                             class="text-sm font-medium font-mono text-gray-950 dark:text-white
-                            @if ($label === __('Debug Mode')) {{ $value === __('Enabled') ? '!text-warning-600 dark:!text-warning-400' : '' }} @endif
-                            @if ($label === __('Environment')) {{ $value === 'production' ? '!text-danger-600 dark:!text-danger-400' : '!text-success-600 dark:!text-success-400' }} @endif
+                            @if ($label === __('Debug Mode')) {{ $value === __('Enabled') ? 'text-warning-600! dark:text-warning-400!' : '' }} @endif
+                            @if ($label === __('Environment')) {{ $value === 'production' ? 'text-danger-600! dark:text-danger-400!' : 'text-success-600! dark:text-success-400!' }} @endif
                         ">
                             {{ $value }}
                         </dd>
@@ -145,7 +145,7 @@
                     <p
                         class="mt-1 text-lg font-semibold font-mono text-gray-950 dark:text-white
                         @if ($label === __('Disk Usage')) @php $pct = (float) str_replace('%', '', $value); @endphp
-                            {{ $pct > 90 ? '!text-danger-600 dark:!text-danger-400' : ($pct > 70 ? '!text-warning-600 dark:!text-warning-400' : '') }} @endif
+                            {{ $pct > 90 ? 'text-danger-600! dark:text-danger-400!' : ($pct > 70 ? 'text-warning-600! dark:text-warning-400!' : '') }} @endif
                     ">
                         {{ $value }}
                     </p>
