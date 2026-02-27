@@ -13,8 +13,6 @@ class About extends Page
 
     protected static ?int $navigationSort = 104;
 
-    protected static ?string $title = 'About';
-
     protected static ?string $slug = 'system/about';
 
     protected string $view = 'filament-system-tools::pages.about';
@@ -22,6 +20,16 @@ class About extends Page
     public static function getNavigationGroup(): ?string
     {
         return FilamentSystemToolsPlugin::make()->getNavigationGroup();
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('About');
+    }
+
+    public function getTitle(): string
+    {
+        return __('About');
     }
 
     public function getSubheading(): ?string

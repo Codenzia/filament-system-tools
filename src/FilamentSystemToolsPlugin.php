@@ -87,7 +87,9 @@ class FilamentSystemToolsPlugin implements Plugin
 
     public function getNavigationGroup(): ?string
     {
-        return $this->navigationGroup ?? config('filament-system-tools.navigation_group', 'System');
+        $group = $this->navigationGroup ?? config('filament-system-tools.navigation_group', 'System');
+
+        return $group ? __($group) : null;
     }
 
     public static function make(): static

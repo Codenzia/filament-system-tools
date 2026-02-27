@@ -32,8 +32,6 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
     protected static ?int $navigationSort = 101;
 
-    protected static ?string $title = 'Database & Backups';
-
     protected static ?string $slug = 'system/backups';
 
     protected string $view = 'filament-system-tools::pages.database-backup';
@@ -43,6 +41,16 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     public static function getNavigationGroup(): ?string
     {
         return FilamentSystemToolsPlugin::make()->getNavigationGroup();
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('Database & Backups');
+    }
+
+    public function getTitle(): string
+    {
+        return __('Database & Backups');
     }
 
     // ──────────────────────────────────────────────

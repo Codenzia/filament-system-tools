@@ -14,8 +14,6 @@ class SystemLogs extends Page
 
     protected static ?int $navigationSort = 103;
 
-    protected static ?string $title = 'System Logs';
-
     protected static ?string $slug = 'system/logs';
 
     protected string $view = 'filament-system-tools::pages.system-logs';
@@ -43,6 +41,16 @@ class SystemLogs extends Page
     public static function getNavigationGroup(): ?string
     {
         return FilamentSystemToolsPlugin::make()->getNavigationGroup();
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('System Logs');
+    }
+
+    public function getTitle(): string
+    {
+        return __('System Logs');
     }
 
     /**

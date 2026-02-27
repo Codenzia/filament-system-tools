@@ -13,8 +13,6 @@ class SystemCache extends Page
 
     protected static ?int $navigationSort = 100;
 
-    protected static ?string $title = 'Cache Management';
-
     protected static ?string $slug = 'system/cache';
 
     protected string $view = 'filament-system-tools::pages.system-cache';
@@ -22,6 +20,16 @@ class SystemCache extends Page
     public static function getNavigationGroup(): ?string
     {
         return FilamentSystemToolsPlugin::make()->getNavigationGroup();
+    }
+
+    public static function getNavigationLabel(): string
+    {
+        return __('Cache Management');
+    }
+
+    public function getTitle(): string
+    {
+        return __('Cache Management');
     }
 
     public function clearAllCache(): void
