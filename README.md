@@ -122,4 +122,9 @@ FilamentSystemToolsPlugin::make()
 
 ## License
 
-MIT
+This package is dual-licensed:
+
+- **MIT License** — Free for open source projects under an OSI-approved license.
+- **Commercial License** — Required for proprietary/commercial projects. Visit [codenzia.com](https://codenzia.com) for details.
+
+See [LICENSE.md](LICENSE.md) for full terms.
