@@ -3,6 +3,7 @@
 namespace Codenzia\FilamentSystemTools\Tests;
 
 use Codenzia\FilamentSystemTools\FilamentSystemToolsServiceProvider;
+use Livewire\LivewireServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
 
 class TestCase extends Orchestra
@@ -10,6 +11,7 @@ class TestCase extends Orchestra
     protected function getPackageProviders($app): array
     {
         return [
+            LivewireServiceProvider::class,
             FilamentSystemToolsServiceProvider::class,
         ];
     }

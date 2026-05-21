@@ -1,0 +1,16 @@
+name: release
+
+# Tag-triggered release. Force-pushes commit + tag from this -dev repo to
+# the public mirror Codenzia/filament-system-tools, then creates a GitHub
+# Release on the public repo. Packagist auto-detects via its webhook.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    uses: Codenzia/plugin-runtime/.github/workflows/plugin-release.yml@main
+    with:
+      public_repo: Codenzia/filament-system-tools
+    secrets: inherit

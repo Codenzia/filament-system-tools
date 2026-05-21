@@ -278,18 +278,18 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
     private function buildColumnDefinition(array $data): string
     {
         $quote = $this->isMysql() ? '`' : '"';
-        $name = $quote . $data['name'] . $quote;
+        $name = $quote.$data['name'].$quote;
         $type = $data['type'];
 
         if (! empty($data['length']) && in_array($type, ['VARCHAR', 'CHAR', 'DECIMAL'], true)) {
-            $type .= '(' . (int) $data['length'] . ')';
+            $type .= '('.(int) $data['length'].')';
         }
 
         $nullable = ! empty($data['nullable']) ? 'NULL' : 'NOT NULL';
         $default = '';
 
         if ($data['default'] !== null && $data['default'] !== '') {
-            $default = 'DEFAULT ' . DB::getPdo()->quote($data['default']);
+            $default = 'DEFAULT '.DB::getPdo()->quote($data['default']);
         }
 
         return trim("{$name} {$type} {$nullable} {$default}");
