@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools;
 
 use Filament\Contracts\Plugin;
@@ -12,11 +14,15 @@ class FilamentSystemToolsPlugin implements Plugin
 {
     protected bool $logsEnabled = true;
 
-    protected bool $cacheEnabled = true;
-
     protected bool $backupsEnabled = true;
 
     protected bool $aboutEnabled = true;
+
+    protected bool $healthEnabled = true;
+
+    protected bool $queueMonitorEnabled = true;
+
+    protected bool $smartMigrationEnabled = true;
 
     protected ?string $navigationGroup = null;
 
@@ -28,13 +34,6 @@ class FilamentSystemToolsPlugin implements Plugin
     public function enableLogs(bool $enabled = true): static
     {
         $this->logsEnabled = $enabled;
-
-        return $this;
-    }
-
-    public function enableCache(bool $enabled = true): static
-    {
-        $this->cacheEnabled = $enabled;
 
         return $this;
     }
@@ -53,6 +52,27 @@ class FilamentSystemToolsPlugin implements Plugin
         return $this;
     }
 
+    public function enableHealth(bool $enabled = true): static
+    {
+        $this->healthEnabled = $enabled;
+
+        return $this;
+    }
+
+    public function enableQueueMonitor(bool $enabled = true): static
+    {
+        $this->queueMonitorEnabled = $enabled;
+
+        return $this;
+    }
+
+    public function enableSmartMigration(bool $enabled = true): static
+    {
+        $this->smartMigrationEnabled = $enabled;
+
+        return $this;
+    }
+
     public function navigationGroup(?string $group): static
     {
         $this->navigationGroup = $group;
@@ -64,16 +84,24 @@ class FilamentSystemToolsPlugin implements Plugin
     {
         $pages = [];
 
+        if ($this->healthEnabled) {
+            $pages[] = Pages\SystemHealth::class;
+        }
+
         if ($this->logsEnabled) {
             $pages[] = Pages\SystemLogs::class;
         }
 
-        if ($this->cacheEnabled) {
-            $pages[] = Pages\SystemCache::class;
-        }
-
         if ($this->backupsEnabled) {
             $pages[] = Pages\DatabaseBackup::class;
+        }
+
+        if ($this->smartMigrationEnabled) {
+            $pages[] = Pages\SmartDataMigration::class;
+        }
+
+        if ($this->queueMonitorEnabled) {
+            $pages[] = Pages\QueueMonitor::class;
         }
 
         if ($this->aboutEnabled) {

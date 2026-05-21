@@ -32,9 +32,20 @@ class SqlQueryRunner extends Component
         $this->sql = "SELECT * FROM \"{$tableName}\" LIMIT 100";
     }
 
+    public function canExecute(): bool
+    {
+        return filament()->auth()->user()?->can('execute_sql_queries') ?? false;
+    }
+
     public function execute(): void
     {
         $this->reset(['results', 'columns', 'error', 'message', 'executionTime', 'affectedRows']);
+
+        if (! $this->canExecute()) {
+            $this->error = __('You are not authorised to run SQL queries.');
+
+            return;
+        }
 
         $sql = trim($this->sql);
 

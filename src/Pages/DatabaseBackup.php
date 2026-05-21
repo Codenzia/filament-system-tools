@@ -1,10 +1,15 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools\Pages;
 
 use Codenzia\FilamentSystemTools\FilamentSystemToolsPlugin;
 use Codenzia\FilamentSystemTools\Models\DatabaseTable;
+use Codenzia\FilamentSystemTools\Services\DatabaseSqlTool;
 use Filament\Actions;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Toggle;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
@@ -20,7 +25,9 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Livewire\WithFileUploads;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 class DatabaseBackup extends Page implements HasForms, HasTable
 {
@@ -36,7 +43,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
     protected string $view = 'filament-system-tools::pages.database-backup';
 
-    public $importFile = null;
+    public mixed $importFile = null;
 
     public static function getNavigationGroup(): ?string
     {
@@ -107,6 +114,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     Actions\Action::make('runSql')
                         ->label(__('Run SQL'))
                         ->icon('heroicon-o-command-line')
+                        ->visible(fn (): bool => filament()->auth()->user()?->can('execute_sql_queries') ?? false)
                         ->slideOver()
                         ->modalWidth(Width::FiveExtraLarge)
                         ->modalHeading(fn ($record): string => __('SQL Query: :table', ['table' => $record->name]))
@@ -121,6 +129,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 Actions\BulkAction::make('exportSql')
                     ->label(__('Export SQL'))
                     ->icon('heroicon-o-arrow-up-tray')
+                    ->visible(fn (): bool => $this->canDownloadBackup())
                     ->deselectRecordsAfterCompletion()
                     ->action(fn (Collection $records): StreamedResponse => $this->exportAsSql(
                         $records->pluck('name')->toArray(),
@@ -129,6 +138,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 Actions\BulkAction::make('exportJson')
                     ->label(__('Export JSON'))
                     ->icon('heroicon-o-code-bracket')
+                    ->visible(fn (): bool => $this->canDownloadBackup())
                     ->deselectRecordsAfterCompletion()
                     ->action(fn (Collection $records): StreamedResponse => $this->exportAsJson(
                         $records->pluck('name')->toArray(),
@@ -196,6 +206,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     // Table Helpers
     // ──────────────────────────────────────────────
 
+    /** @return list<string> */
     public function getAvailableTables(): array
     {
         $connection = config('database.default');
@@ -216,6 +227,25 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         return array_values(array_filter($names, fn (string $name): bool => ! in_array($name, $excludedTables, true)));
     }
 
+    /** @return array<string, string> */
+    public function getConnectionOptions(): array
+    {
+        $connections = config('database.connections', []);
+
+        $options = [];
+
+        foreach (array_keys($connections) as $name) {
+            $name = (string) $name;
+            $driver = (string) config("database.connections.{$name}.driver");
+
+            if (in_array($driver, ['sqlite', 'mysql', 'mariadb', 'pgsql'], true)) {
+                $options[$name] = "{$name} ({$driver})";
+            }
+        }
+
+        return $options;
+    }
+
     // ──────────────────────────────────────────────
     // Export
     // ──────────────────────────────────────────────
@@ -223,14 +253,14 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     private function exportAsSql(array $tables, string $timestamp): StreamedResponse
     {
         $appName = config('filament-system-tools.app_name', config('app.name', 'Laravel'));
-        $filename = strtolower(str_replace(' ', '_', $appName)) . "_export_{$timestamp}.sql";
+        $filename = strtolower(str_replace(' ', '_', $appName))."_export_{$timestamp}.sql";
         $connection = config('database.default');
 
         return response()->streamDownload(function () use ($tables, $connection, $appName): void {
             echo "-- {$appName} Database Export\n";
-            echo '-- Date: ' . date('Y-m-d H:i:s') . "\n";
+            echo '-- Date: '.date('Y-m-d H:i:s')."\n";
             echo "-- Driver: {$connection}\n";
-            echo '-- Tables: ' . implode(', ', $tables) . "\n\n";
+            echo '-- Tables: '.implode(', ', $tables)."\n\n";
 
             if ($connection === 'sqlite') {
                 echo "PRAGMA foreign_keys = OFF;\n\n";
@@ -245,7 +275,6 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 echo "-- Table: {$table}\n";
                 echo "-- ──────────────────────────────────────\n\n";
 
-                // DDL
                 if ($connection === 'sqlite') {
                     $ddl = DB::selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", [$table]);
                     if ($ddl && $ddl->sql) {
@@ -262,7 +291,6 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     }
                 }
 
-                // Data — chunked for large tables
                 $offset = 0;
                 $chunkSize = 500;
                 $pdo = DB::getPdo();
@@ -286,7 +314,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                             }
                         }
                         $columns = implode(', ', array_map(fn ($col) => "\"{$col}\"", array_keys((array) $row)));
-                        echo "INSERT INTO \"{$table}\" ({$columns}) VALUES (" . implode(', ', $values) . ");\n";
+                        echo "INSERT INTO \"{$table}\" ({$columns}) VALUES (".implode(', ', $values).");\n";
                     }
 
                     $offset += $chunkSize;
@@ -310,7 +338,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     private function exportAsJson(array $tables, string $timestamp): StreamedResponse
     {
         $appName = config('filament-system-tools.app_name', config('app.name', 'Laravel'));
-        $filename = strtolower(str_replace(' ', '_', $appName)) . "_export_{$timestamp}.json";
+        $filename = strtolower(str_replace(' ', '_', $appName))."_export_{$timestamp}.json";
 
         return response()->streamDownload(function () use ($tables): void {
             $data = [
@@ -332,11 +360,20 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     }
 
     // ──────────────────────────────────────────────
-    // Import
+    // Import (uploaded .sql / .json files — not full backups)
     // ──────────────────────────────────────────────
 
     public function importFromFile(): void
     {
+        if (! $this->canRestoreBackup()) {
+            Notification::make()
+                ->title(__('Unauthorized'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
         if (! $this->importFile) {
             Notification::make()
                 ->title(__('No file selected'))
@@ -390,7 +427,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 ]))
                 ->success()
                 ->send();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             Notification::make()
                 ->title(__('Import failed'))
                 ->body($e->getMessage())
@@ -401,6 +438,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         $this->importFile = null;
     }
 
+    /** @return array{tables: int, rows: int} */
     private function importJson(string $contents): array
     {
         $data = json_decode($contents, true);
@@ -427,7 +465,6 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     continue;
                 }
 
-                // Verify the table exists before importing
                 $availableTables = $this->getAvailableTables();
                 if (! in_array($table, $availableTables, true)) {
                     continue;
@@ -435,13 +472,12 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
                 $tableCount++;
 
-                // Insert in chunks
                 foreach (array_chunk($rows, 500) as $chunk) {
                     foreach ($chunk as $row) {
                         try {
                             DB::table($table)->insert($row);
                             $rowCount++;
-                        } catch (\Throwable) {
+                        } catch (Throwable) {
                             // Skip duplicate rows
                         }
                     }
@@ -455,7 +491,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             }
 
             DB::commit();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             DB::rollBack();
             throw $e;
         }
@@ -463,17 +499,16 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         return ['tables' => $tableCount, 'rows' => $rowCount];
     }
 
+    /** @return array{tables: int, rows: int} */
     private function importSql(string $contents): array
     {
         $tableCount = 0;
         $rowCount = 0;
 
-        // Remove comment lines
         $lines = explode("\n", $contents);
         $cleanLines = array_filter($lines, fn (string $line): bool => ! str_starts_with(trim($line), '--'));
         $sql = implode("\n", $cleanLines);
 
-        // Split into statements
         $statements = array_filter(
             array_map('trim', explode(';', $sql)),
             fn (string $s): bool => ! empty($s)
@@ -485,12 +520,11 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             foreach ($statements as $statement) {
                 $upper = strtoupper(trim($statement));
 
-                // Skip transaction control — we handle our own
                 if (in_array($upper, ['BEGIN TRANSACTION', 'COMMIT', 'BEGIN'], true)) {
                     continue;
                 }
 
-                DB::unprepared($statement . ';');
+                DB::unprepared($statement.';');
 
                 if (str_starts_with($upper, 'CREATE TABLE')) {
                     $tableCount++;
@@ -500,7 +534,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             }
 
             DB::commit();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             DB::rollBack();
             throw $e;
         }
@@ -512,6 +546,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     // Full Backup & Restore
     // ──────────────────────────────────────────────
 
+    /** @return list<array{name: string, size: string, date: string, path: string}> */
     public function getBackupFiles(): array
     {
         $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
@@ -532,82 +567,179 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             ];
         }
 
-        // Sort by date descending
         usort($backups, fn ($a, $b) => strtotime($b['date']) - strtotime($a['date']));
 
         return $backups;
     }
 
-    public function createBackup(): void
+    public function canCreateBackup(): bool
     {
-        $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
+        return filament()->auth()->user()?->can('create_database_backup') ?? false;
+    }
+
+    public function canDownloadBackup(): bool
+    {
+        return filament()->auth()->user()?->can('download_database_backup') ?? false;
+    }
+
+    public function canRestoreBackup(): bool
+    {
+        return filament()->auth()->user()?->can('restore_database_backup') ?? false;
+    }
+
+    public function canDeleteBackup(): bool
+    {
+        return filament()->auth()->user()?->can('delete_database_backup') ?? false;
+    }
+
+    /**
+     * Header action: open a modal to configure a new full backup.
+     */
+    public function createBackupAction(): Actions\Action
+    {
+        return Actions\Action::make('createBackup')
+            ->label(__('Create Database Backup'))
+            ->icon('heroicon-o-plus')
+            ->color('primary')
+            ->visible(fn (): bool => $this->canCreateBackup())
+            ->schema([
+                Select::make('connection')
+                    ->label(__('Connection'))
+                    ->options(fn () => $this->getConnectionOptions())
+                    ->default(config('database.default'))
+                    ->required()
+                    ->searchable()
+                    ->live(),
+                Toggle::make('gzip')
+                    ->label(__('Gzip output (.sql.gz)'))
+                    ->default(false)
+                    ->helperText(__('Reduces file size — requires the gzip binary on PATH.')),
+                Select::make('tables')
+                    ->label(__('Tables (optional)'))
+                    ->multiple()
+                    ->searchable()
+                    ->options(fn (callable $get) => $this->getTablesForConnection($get('connection')))
+                    ->placeholder(__('Leave empty to back up all tables'))
+                    ->helperText(__('Per-table filtering supported for SQLite and MySQL only.')),
+            ])
+            ->action(function (array $data): void {
+                $this->createBackup(
+                    connection: (string) ($data['connection'] ?? config('database.default')),
+                    gzip: (bool) ($data['gzip'] ?? false),
+                    tables: array_values(array_filter((array) ($data['tables'] ?? []))),
+                );
+            });
+    }
+
+    /** @return array<string, string> */
+    private function getTablesForConnection(?string $connection): array
+    {
+        if (! $connection) {
+            return [];
+        }
+
+        try {
+            $driver = (string) config("database.connections.{$connection}.driver");
+
+            if (in_array($driver, ['mysql', 'mariadb'], true)) {
+                $database = config("database.connections.{$connection}.database");
+                $rows = DB::connection($connection)
+                    ->table('information_schema.tables')
+                    ->where('table_schema', $database)
+                    ->pluck('TABLE_NAME', 'TABLE_NAME');
+
+                return $rows->all();
+            }
+
+            $tables = DB::connection($connection)->getSchemaBuilder()->getTableListing();
+
+            return collect($tables)->mapWithKeys(fn (string $t) => [$t => $t])->all();
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Create a full backup. Defaults to the application's default connection.
+     *
+     * @param  list<string>  $tables
+     */
+    public function createBackup(?string $connection = null, bool $gzip = false, array $tables = []): void
+    {
+        if (! $this->canCreateBackup()) {
+            Notification::make()
+                ->title(__('Unauthorized'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        $connection ??= (string) config('database.default');
+
+        $backupPath = (string) config('filament-system-tools.backup_path', storage_path('app/backups'));
 
         if (! File::isDirectory($backupPath)) {
             File::makeDirectory($backupPath, 0755, true);
         }
 
-        $filename = 'backup_' . date('Y-m-d_His') . '.sql';
-        $filepath = $backupPath . '/' . $filename;
+        $driver = (string) config("database.connections.{$connection}.driver");
+        $timestamp = date('Y-m-d_His');
+        $extension = $gzip ? 'sql.gz' : 'sql';
+        $filename = "backup-{$connection}-{$timestamp}.{$extension}";
+        $filepath = $backupPath.DIRECTORY_SEPARATOR.$filename;
 
-        $connection = config('database.default');
-
-        if ($connection === 'sqlite') {
-            $dbPath = config('database.connections.sqlite.database');
-            File::copy($dbPath, $filepath);
+        try {
+            // Fast path: SQLite, no gzip, no table filter — file copy needs no binary.
+            if ($driver === 'sqlite' && ! $gzip && $tables === []) {
+                $dbPath = (string) config("database.connections.{$connection}.database");
+                File::copy($dbPath, $filepath);
+            } else {
+                app(DatabaseSqlTool::class)->export(
+                    connection: $connection,
+                    path: $filepath,
+                    gzip: $gzip,
+                    tables: $tables,
+                );
+            }
 
             Notification::make()
-                ->title(__('Database backup created!'))
+                ->title(__('Database backup created'))
                 ->body($filename)
                 ->success()
                 ->send();
-        } else {
-            // For MySQL, use mysqldump
-            $host = config("database.connections.{$connection}.host");
-            $port = config("database.connections.{$connection}.port");
-            $database = config("database.connections.{$connection}.database");
-            $username = config("database.connections.{$connection}.username");
-            $password = config("database.connections.{$connection}.password");
-
-            $command = sprintf(
-                'mysqldump --host=%s --port=%s --user=%s --password=%s %s > %s',
-                escapeshellarg($host),
-                escapeshellarg($port),
-                escapeshellarg($username),
-                escapeshellarg($password),
-                escapeshellarg($database),
-                escapeshellarg($filepath)
-            );
-
-            exec($command, $output, $returnCode);
-
-            if ($returnCode === 0) {
-                Notification::make()
-                    ->title(__('Database backup created!'))
-                    ->body($filename)
-                    ->success()
-                    ->send();
-            } else {
-                Notification::make()
-                    ->title(__('Backup failed'))
-                    ->body(__('Could not create database backup. Check server configuration.'))
-                    ->danger()
-                    ->send();
-            }
+        } catch (Throwable $e) {
+            Notification::make()
+                ->title(__('Backup failed'))
+                ->body($e->getMessage())
+                ->danger()
+                ->send();
         }
     }
 
-    public function downloadBackup(string $filename): StreamedResponse
+    public function downloadBackup(string $filename): BinaryFileResponse
     {
+        abort_unless($this->canDownloadBackup(), 403);
+
         $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
-        $filepath = $backupPath . '/' . basename($filename);
+        $filepath = $backupPath.DIRECTORY_SEPARATOR.basename($filename);
 
         return response()->download($filepath);
     }
 
     public function restoreBackup(string $filename): void
     {
-        $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
-        $filepath = $backupPath . '/' . basename($filename);
+        if (! $this->canRestoreBackup()) {
+            Notification::make()
+                ->title(__('Unauthorized'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        $backupPath = (string) config('filament-system-tools.backup_path', storage_path('app/backups'));
+        $filepath = $backupPath.DIRECTORY_SEPARATOR.basename($filename);
 
         if (! File::exists($filepath)) {
             Notification::make()
@@ -618,23 +750,28 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             return;
         }
 
-        $connection = config('database.default');
+        $connection = $this->detectConnectionFromFilename($filename) ?? (string) config('database.default');
+        $driver = (string) config("database.connections.{$connection}.driver");
+        $isGzipped = str_ends_with($filename, '.gz');
 
         try {
-            if ($connection === 'sqlite') {
-                $dbPath = config('database.connections.sqlite.database');
+            // Fast path: raw SQLite database file (legacy backup format) — file copy.
+            if ($driver === 'sqlite' && ! $isGzipped && $this->looksLikeSqliteBinary($filepath)) {
+                $dbPath = (string) config("database.connections.{$connection}.database");
                 File::copy($filepath, $dbPath);
             } else {
-                $contents = File::get($filepath);
-                DB::unprepared($contents);
+                app(DatabaseSqlTool::class)->import(
+                    path: $filepath,
+                    connection: $connection,
+                );
             }
 
             Notification::make()
-                ->title(__('Backup restored!'))
+                ->title(__('Backup restored'))
                 ->body(__('Database has been restored from :file', ['file' => basename($filename)]))
                 ->success()
                 ->send();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             Notification::make()
                 ->title(__('Restore failed'))
                 ->body($e->getMessage())
@@ -643,10 +780,54 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         }
     }
 
+    /**
+     * Backup filenames produced by createBackup() embed the connection name as
+     * `backup-{connection}-{timestamp}.{ext}`. Recover it so restore picks the
+     * right driver even when the user has changed default connection since.
+     */
+    private function detectConnectionFromFilename(string $filename): ?string
+    {
+        if (! preg_match('/^backup-(?<conn>[^-]+(?:-[^-]+)*?)-\d{4}-\d{2}-\d{2}_\d{6}\.(sql|sql\.gz)$/', $filename, $m)) {
+            return null;
+        }
+
+        $conn = $m['conn'];
+
+        return config("database.connections.{$conn}") ? $conn : null;
+    }
+
+    private function looksLikeSqliteBinary(string $path): bool
+    {
+        if (! File::exists($path)) {
+            return false;
+        }
+
+        $handle = @fopen($path, 'rb');
+
+        if ($handle === false) {
+            return false;
+        }
+
+        $header = (string) fread($handle, 16);
+        fclose($handle);
+
+        // SQLite 3 file header magic string
+        return str_starts_with($header, 'SQLite format 3');
+    }
+
     public function deleteBackup(string $filename): void
     {
+        if (! $this->canDeleteBackup()) {
+            Notification::make()
+                ->title(__('Unauthorized'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
         $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
-        $filepath = $backupPath . '/' . basename($filename);
+        $filepath = $backupPath.DIRECTORY_SEPARATOR.basename($filename);
 
         if (File::exists($filepath)) {
             File::delete($filepath);
@@ -658,6 +839,13 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         }
     }
 
+    protected function getHeaderActions(): array
+    {
+        return [
+            $this->createBackupAction(),
+        ];
+    }
+
     // ──────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────
@@ -665,11 +853,12 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     private function formatBytes(int $bytes, int $precision = 2): string
     {
         $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $i = 0;
 
-        for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
+        for (; $bytes > 1024 && $i < count($units) - 1; $i++) {
             $bytes /= 1024;
         }
 
-        return round($bytes, $precision) . ' ' . $units[$i];
+        return round($bytes, $precision).' '.$units[$i];
     }
 }

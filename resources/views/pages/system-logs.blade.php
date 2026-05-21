@@ -72,11 +72,13 @@
                     {{ __('Refresh') }}
                 </button>
 
-                <button wire:click="downloadLog"
-                    class="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
-                    @svg('heroicon-o-arrow-down-tray', 'size-3.5')
-                    {{ __('Download') }}
-                </button>
+                @if ($this->canDownloadLog())
+                    <button wire:click="downloadLog"
+                        class="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
+                        @svg('heroicon-o-arrow-down-tray', 'size-3.5')
+                        {{ __('Download') }}
+                    </button>
+                @endif
 
                 @if ($this->canClearLog())
                     <button wire:click="clearLog" wire:confirm="{{ __('Are you sure you want to clear the log file?') }}"

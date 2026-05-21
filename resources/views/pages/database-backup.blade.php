@@ -75,10 +75,10 @@
                 @svg('heroicon-o-shield-check', 'size-5 inline-block -mt-0.5 me-1')
                 {{ __('Full Backup') }}
             </x-slot>
-            <x-slot name="description">{{ __('Create a full snapshot of the database.') }}</x-slot>
-            <x-filament::button wire:click="createBackup" color="primary" icon="heroicon-o-plus" class="w-full justify-center">
-                {{ __('Create Database Backup') }}
-            </x-filament::button>
+            <x-slot name="description">{{ __('Pick a connection, optionally gzip the dump or restrict to specific tables.') }}</x-slot>
+            <div class="w-full">
+                {{ $this->createBackupAction }}
+            </div>
         </x-filament::section>
 
         {{-- Existing Backups --}}
@@ -97,17 +97,23 @@
                                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ $backup['size'] }} · {{ $backup['date'] }}</p>
                             </div>
                             <div class="flex items-center gap-1 ms-3 shrink-0">
-                                <x-filament::button size="sm" color="gray" outlined icon="heroicon-o-arrow-down-tray"
-                                    wire:click="downloadBackup('{{ $backup['name'] }}')"
-                                    title="{{ __('Download') }}" />
-                                <x-filament::button size="sm" color="warning" outlined icon="heroicon-o-arrow-path"
-                                    wire:click="restoreBackup('{{ $backup['name'] }}')"
-                                    wire:confirm="{{ __('This will overwrite your current database with this backup. Are you sure?') }}"
-                                    title="{{ __('Restore') }}" />
-                                <x-filament::button size="sm" color="danger" outlined icon="heroicon-o-trash"
-                                    wire:click="deleteBackup('{{ $backup['name'] }}')"
-                                    wire:confirm="{{ __('Are you sure you want to delete this backup?') }}"
-                                    title="{{ __('Delete') }}" />
+                                @if ($this->canDownloadBackup())
+                                    <x-filament::button size="sm" color="gray" outlined icon="heroicon-o-arrow-down-tray"
+                                        wire:click="downloadBackup('{{ $backup['name'] }}')"
+                                        title="{{ __('Download') }}" />
+                                @endif
+                                @if ($this->canRestoreBackup())
+                                    <x-filament::button size="sm" color="warning" outlined icon="heroicon-o-arrow-path"
+                                        wire:click="restoreBackup('{{ $backup['name'] }}')"
+                                        wire:confirm="{{ __('This will overwrite your current database with this backup. Are you sure?') }}"
+                                        title="{{ __('Restore') }}" />
+                                @endif
+                                @if ($this->canDeleteBackup())
+                                    <x-filament::button size="sm" color="danger" outlined icon="heroicon-o-trash"
+                                        wire:click="deleteBackup('{{ $backup['name'] }}')"
+                                        wire:confirm="{{ __('Are you sure you want to delete this backup?') }}"
+                                        title="{{ __('Delete') }}" />
+                                @endif
                             </div>
                         </div>
                     @endforeach

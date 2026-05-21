@@ -2,7 +2,39 @@
     @php
         $info = $this->getSystemInfo();
         $release = $this->getReleaseInfo();
+        $supportSnippet = $this->getSupportSnippet();
     @endphp
+
+    {{-- Copy Support Snippet --}}
+    <div x-data="{
+            copied: false,
+            snippet: @js($supportSnippet),
+            copy() {
+                const done = () => { this.copied = true; setTimeout(() => this.copied = false, 2000); };
+                if (navigator.clipboard?.writeText) {
+                    navigator.clipboard.writeText(this.snippet).then(done);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = this.snippet; document.body.appendChild(ta);
+                    ta.select(); document.execCommand('copy'); ta.remove(); done();
+                }
+            },
+        }"
+        class="rounded-xl bg-info-50 dark:bg-info-500/10 border border-info-200 dark:border-info-500/20 p-4 flex items-center justify-between gap-3">
+        <div class="flex gap-3">
+            <x-filament::icon icon="heroicon-o-clipboard-document" class="w-5 h-5 text-info-500 shrink-0 mt-0.5" />
+            <div class="text-sm text-info-700 dark:text-info-400">
+                <p class="font-medium">{{ __('Support snapshot') }}</p>
+                <p class="text-xs mt-0.5">{{ __('Copy a markdown-formatted summary of versions, drivers, and storage info to attach to a support ticket.') }}</p>
+            </div>
+        </div>
+        <button x-on:click="copy()" type="button"
+            class="fi-btn shrink-0 relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-info-600 text-white hover:bg-info-500 dark:bg-info-500 dark:hover:bg-info-400 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
+            <x-filament::icon x-show="!copied" icon="heroicon-o-clipboard" class="w-4 h-4" />
+            <x-filament::icon x-show="copied" icon="heroicon-o-check" class="w-4 h-4" />
+            <span x-text="copied ? '{{ __('Copied!') }}' : '{{ __('Copy snapshot') }}'"></span>
+        </button>
+    </div>
 
     {{-- Release Info Cards --}}
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">

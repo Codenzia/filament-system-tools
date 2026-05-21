@@ -3,9 +3,12 @@
 namespace Codenzia\FilamentSystemTools\Pages;
 
 use Codenzia\FilamentSystemTools\FilamentSystemToolsPlugin;
+use Filament\Actions;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SystemLogs extends Page
@@ -159,10 +162,28 @@ class SystemLogs extends Page
     }
 
     /**
-     * Download the current log file.
+     * Whether the current user can download log files.
+     */
+    public function canDownloadLog(): bool
+    {
+        return filament()->auth()->user()?->can('download_system_logs') ?? false;
+    }
+
+    /**
+     * Whether the current user can flip the runtime log level.
+     */
+    public function canSetLogLevel(): bool
+    {
+        return filament()->auth()->user()?->can('set_log_level') ?? false;
+    }
+
+    /**
+     * Download the current log file. Requires the download_system_logs permission.
      */
     public function downloadLog(): StreamedResponse
     {
+        abort_unless($this->canDownloadLog(), 403);
+
         $logFile = $this->getCurrentLogFile();
 
         if (! $logFile || ! File::exists($logFile)) {
@@ -175,6 +196,65 @@ class SystemLogs extends Page
         }
 
         return response()->download($logFile);
+    }
+
+    public function enableDebugLoggingAction(): Actions\Action
+    {
+        return Actions\Action::make('enableDebugLogging')
+            ->label(__('Debug logging (30 min)'))
+            ->icon('heroicon-o-bug-ant')
+            ->color('warning')
+            ->visible(fn (): bool => $this->canSetLogLevel() && ! Cache::has('system_tools.log_level_override'))
+            ->requiresConfirmation()
+            ->modalDescription(__('Temporarily lifts the application log level to "debug" for 30 minutes. Verbose log content may include sensitive data — disable as soon as you are finished troubleshooting.'))
+            ->action(function (): void {
+                if (! $this->canSetLogLevel()) {
+                    Notification::make()->title(__('Unauthorized'))->danger()->send();
+
+                    return;
+                }
+
+                Cache::put('system_tools.log_level_override', 'debug', now()->addMinutes(30));
+                Log::forgetChannel(config('logging.default'));
+
+                Notification::make()
+                    ->title(__('Debug logging enabled'))
+                    ->body(__('Reverts automatically in 30 minutes.'))
+                    ->success()
+                    ->send();
+            });
+    }
+
+    public function disableDebugLoggingAction(): Actions\Action
+    {
+        return Actions\Action::make('disableDebugLogging')
+            ->label(__('Disable debug logging'))
+            ->icon('heroicon-o-shield-check')
+            ->color('gray')
+            ->visible(fn (): bool => $this->canSetLogLevel() && Cache::has('system_tools.log_level_override'))
+            ->action(function (): void {
+                if (! $this->canSetLogLevel()) {
+                    Notification::make()->title(__('Unauthorized'))->danger()->send();
+
+                    return;
+                }
+
+                Cache::forget('system_tools.log_level_override');
+                Log::forgetChannel(config('logging.default'));
+
+                Notification::make()
+                    ->title(__('Debug logging disabled'))
+                    ->success()
+                    ->send();
+            });
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            $this->enableDebugLoggingAction(),
+            $this->disableDebugLoggingAction(),
+        ];
     }
 
     /**
@@ -237,7 +317,7 @@ class SystemLogs extends Page
                 ];
             } elseif ($currentEntry !== null && trim($line) !== '') {
                 // Append to current entry's context (stack traces, etc.)
-                $currentEntry['context'] .= ($currentEntry['context'] ? "\n" : '') . rtrim($line);
+                $currentEntry['context'] .= ($currentEntry['context'] ? "\n" : '').rtrim($line);
             }
         }
 
@@ -257,6 +337,6 @@ class SystemLogs extends Page
             $bytes /= 1024;
         }
 
-        return round($bytes, $precision) . ' ' . $units[$i];
+        return round($bytes, $precision).' '.$units[$i];
     }
 }

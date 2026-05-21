@@ -34,7 +34,42 @@ class About extends Page
 
     public function getSubheading(): ?string
     {
-        return config('app.name');
+        return __('Release info and a comprehensive system snapshot for support requests.');
+    }
+
+    /**
+     * Build a markdown-formatted snapshot suitable for pasting into a
+     * support ticket. Returned to the blade so a "Copy" button can stash it
+     * on the page for one-click clipboard access.
+     */
+    public function getSupportSnippet(): string
+    {
+        $release = $this->getReleaseInfo();
+        $info = $this->getSystemInfo();
+
+        $lines = ['# '.config('app.name').' — Support Snapshot'];
+        $lines[] = '_Generated: '.now()->toDateTimeString().'_';
+        $lines[] = '';
+
+        $lines[] = '## Release';
+        $lines[] = '- Version: `'.$release['version'].'`';
+        if ($release['name'] !== '') {
+            $lines[] = '- Name: '.$release['name'];
+        }
+        if ($release['date'] !== '') {
+            $lines[] = '- Date: '.$release['date'];
+        }
+        $lines[] = '';
+
+        foreach ($info as $section => $rows) {
+            $lines[] = '## '.ucfirst($section);
+            foreach ($rows as $label => $value) {
+                $lines[] = "- {$label}: `{$value}`";
+            }
+            $lines[] = '';
+        }
+
+        return trim(implode("\n", $lines));
     }
 
     /**
@@ -68,6 +103,17 @@ class About extends Page
     }
 
     /**
+     * Whether the current user is allowed to see the full, unredacted system info.
+     * When false, sensitive fields (host, db name, OS+arch, memory/upload limits,
+     * absolute disk numbers) are hidden — non-privileged visitors still see the
+     * categories and the safe-to-share values so the showcase remains useful.
+     */
+    public function canViewFullSystemInfo(): bool
+    {
+        return filament()->auth()->user()?->can('view_full_system_info') ?? false;
+    }
+
+    /**
      * @return array<string, string>
      */
     private function getEnvironmentInfo(): array
@@ -89,14 +135,20 @@ class About extends Page
      */
     private function getServerInfo(): array
     {
+        if (! $this->canViewFullSystemInfo()) {
+            return [
+                __('Server API') => PHP_SAPI,
+            ];
+        }
+
         return [
-            __('Operating System') => PHP_OS_FAMILY . ' ' . php_uname('r'),
+            __('Operating System') => PHP_OS_FAMILY.' '.php_uname('r'),
             __('Architecture') => php_uname('m'),
             __('Server API') => PHP_SAPI,
             __('Memory Limit') => ini_get('memory_limit') ?: __('Unknown'),
             __('Max Upload Size') => ini_get('upload_max_filesize') ?: __('Unknown'),
             __('Max POST Size') => ini_get('post_max_size') ?: __('Unknown'),
-            __('Max Execution Time') => (ini_get('max_execution_time') ?: '0') . 's',
+            __('Max Execution Time') => (ini_get('max_execution_time') ?: '0').'s',
         ];
     }
 
@@ -106,11 +158,16 @@ class About extends Page
     private function getDatabaseInfo(): array
     {
         $driver = config('database.default');
+        $privileged = $this->canViewFullSystemInfo();
+
         $info = [
             __('Driver') => ucfirst($driver),
-            __('Host') => config("database.connections.{$driver}.host", '-'),
-            __('Database') => config("database.connections.{$driver}.database", '-'),
         ];
+
+        if ($privileged) {
+            $info[__('Host')] = config("database.connections.{$driver}.host", '-');
+            $info[__('Database')] = config("database.connections.{$driver}.database", '-');
+        }
 
         try {
             $version = match ($driver) {
@@ -119,7 +176,10 @@ class About extends Page
                 'sqlite' => DB::selectOne('SELECT sqlite_version() as version')?->version ?? __('Unknown'),
                 default => __('Unknown'),
             };
-            $info[__('Version')] = $version;
+
+            if ($privileged) {
+                $info[__('Version')] = $version;
+            }
 
             // Table count
             $tables = match ($driver) {
@@ -130,17 +190,19 @@ class About extends Page
             };
             $info[__('Tables')] = (string) count($tables);
 
-            // Database size
-            if (in_array($driver, ['mysql', 'mariadb'])) {
+            // Database size — only for privileged users (otherwise leaks growth metrics).
+            if ($privileged && in_array($driver, ['mysql', 'mariadb'])) {
                 $dbName = config("database.connections.{$driver}.database");
                 $size = DB::selectOne(
                     'SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS size FROM information_schema.tables WHERE table_schema = ?',
                     [$dbName]
                 );
-                $info[__('Size')] = ($size?->size ?? '0') . ' MB';
+                $info[__('Size')] = ($size?->size ?? '0').' MB';
             }
         } catch (\Throwable) {
-            $info[__('Version')] = __('Unable to query');
+            if ($privileged) {
+                $info[__('Version')] = __('Unable to query');
+            }
         }
 
         return $info;
@@ -169,19 +231,22 @@ class About extends Page
     {
         $storagePath = storage_path();
         $info = [];
+        $privileged = $this->canViewFullSystemInfo();
 
-        try {
-            $diskTotal = disk_total_space($storagePath);
-            $diskFree = disk_free_space($storagePath);
-            $diskUsed = $diskTotal - $diskFree;
-            $usagePercent = $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0;
+        if ($privileged) {
+            try {
+                $diskTotal = disk_total_space($storagePath);
+                $diskFree = disk_free_space($storagePath);
+                $diskUsed = $diskTotal - $diskFree;
+                $usagePercent = $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0;
 
-            $info[__('Disk Total')] = $this->formatBytes((int) $diskTotal);
-            $info[__('Disk Used')] = $this->formatBytes((int) $diskUsed);
-            $info[__('Disk Free')] = $this->formatBytes((int) $diskFree);
-            $info[__('Disk Usage')] = $usagePercent . '%';
-        } catch (\Throwable) {
-            $info[__('Disk')] = __('Unable to read disk info');
+                $info[__('Disk Total')] = $this->formatBytes((int) $diskTotal);
+                $info[__('Disk Used')] = $this->formatBytes((int) $diskUsed);
+                $info[__('Disk Free')] = $this->formatBytes((int) $diskFree);
+                $info[__('Disk Usage')] = $usagePercent.'%';
+            } catch (\Throwable) {
+                $info[__('Disk')] = __('Unable to read disk info');
+            }
         }
 
         // Logs directory size
@@ -232,6 +297,6 @@ class About extends Page
             $bytes /= 1024;
         }
 
-        return round($bytes, $precision) . ' ' . $units[$i];
+        return round($bytes, $precision).' '.$units[$i];
     }
 }
