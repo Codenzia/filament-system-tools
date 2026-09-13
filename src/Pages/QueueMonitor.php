@@ -10,6 +10,7 @@ use Cron\CronExpression;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -20,6 +21,11 @@ class QueueMonitor extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-queue-list';
 
     protected static ?int $navigationSort = 103;
+
+    public static function getNavigationSort(): ?int
+    {
+        return config('filament-system-tools.navigation_sort.queue_monitor', 103);
+    }
 
     protected static ?string $slug = 'system/queue';
 
@@ -40,6 +46,12 @@ class QueueMonitor extends Page
         return __('Queue & Scheduler');
     }
 
+    public static function canAccess(): bool
+    {
+        return app()->bound('filament')
+            && (filament()->auth()->user()?->can('view_queue_monitor') ?? false);
+    }
+
     /**
      * Snapshot of whether the host has the Laravel scheduler + queue
      * worker cron jobs wired up, plus the suggested cron lines to paste
@@ -56,8 +68,70 @@ class QueueMonitor extends Page
     }
 
     /**
+     * The queue connection whose storage this page reports on.
+     */
+    private function queueConnectionName(): string
+    {
+        return (string) config('queue.default');
+    }
+
+    public function queueDriver(): string
+    {
+        return (string) config('queue.connections.'.$this->queueConnectionName().'.driver');
+    }
+
+    /**
+     * Job storage for the configured queue connection — its own database
+     * connection and table, not the framework defaults. Null when the driver
+     * keeps jobs somewhere this page cannot read (Redis, SQS, sync).
+     */
+    private function jobsQuery(): ?Builder
+    {
+        if ($this->queueDriver() !== 'database') {
+            return null;
+        }
+
+        $name = $this->queueConnectionName();
+
+        return $this->tableQuery(
+            (string) (config("queue.connections.{$name}.connection") ?? config('database.default')),
+            (string) config("queue.connections.{$name}.table", 'jobs'),
+        );
+    }
+
+    private function failedJobsQuery(): ?Builder
+    {
+        return $this->tableQuery(
+            (string) (config('queue.failed.database') ?? config('database.default')),
+            (string) config('queue.failed.table', 'failed_jobs'),
+        );
+    }
+
+    private function batchesQuery(): ?Builder
+    {
+        return $this->tableQuery(
+            (string) (config('queue.batching.database') ?? config('database.default')),
+            (string) config('queue.batching.table', 'job_batches'),
+        );
+    }
+
+    private function tableQuery(string $connection, string $table): ?Builder
+    {
+        try {
+            if (! Schema::connection($connection)->hasTable($table)) {
+                return null;
+            }
+
+            return DB::connection($connection)->table($table);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
      * @return array{
      *     driver: string,
+     *     metrics_supported: bool,
      *     pending: int,
      *     reserved: int,
      *     failed: int,
@@ -69,8 +143,11 @@ class QueueMonitor extends Page
      */
     public function getQueueStats(): array
     {
+        $jobs = $this->jobsQuery();
+
         $stats = [
-            'driver' => (string) config('queue.default'),
+            'driver' => $this->queueConnectionName(),
+            'metrics_supported' => $jobs !== null,
             'pending' => 0,
             'reserved' => 0,
             'failed' => 0,
@@ -81,11 +158,11 @@ class QueueMonitor extends Page
         ];
 
         try {
-            if (Schema::hasTable('jobs')) {
-                $stats['pending'] = (int) DB::table('jobs')->whereNull('reserved_at')->count();
-                $stats['reserved'] = (int) DB::table('jobs')->whereNotNull('reserved_at')->count();
+            if ($jobs !== null) {
+                $stats['pending'] = (int) (clone $jobs)->whereNull('reserved_at')->count();
+                $stats['reserved'] = (int) (clone $jobs)->whereNotNull('reserved_at')->count();
 
-                $stats['queues'] = DB::table('jobs')
+                $stats['queues'] = (clone $jobs)
                     ->selectRaw('queue, count(*) as total, sum(case when reserved_at is not null then 1 else 0 end) as processing')
                     ->groupBy('queue')
                     ->get()
@@ -97,7 +174,7 @@ class QueueMonitor extends Page
                     ])
                     ->all();
 
-                $stats['recent_pending'] = DB::table('jobs')
+                $stats['recent_pending'] = (clone $jobs)
                     ->orderByDesc('id')
                     ->limit(10)
                     ->get()
@@ -115,10 +192,12 @@ class QueueMonitor extends Page
                     ->all();
             }
 
-            if (Schema::hasTable('failed_jobs')) {
-                $stats['failed'] = (int) DB::table('failed_jobs')->count();
+            $failed = $this->failedJobsQuery();
 
-                $stats['recent_failed'] = DB::table('failed_jobs')
+            if ($failed !== null) {
+                $stats['failed'] = (int) (clone $failed)->count();
+
+                $stats['recent_failed'] = (clone $failed)
                     ->orderByDesc('failed_at')
                     ->limit(20)
                     ->get()
@@ -137,8 +216,10 @@ class QueueMonitor extends Page
                     ->all();
             }
 
-            if (Schema::hasTable('job_batches')) {
-                $stats['batches'] = DB::table('job_batches')
+            $batches = $this->batchesQuery();
+
+            if ($batches !== null) {
+                $stats['batches'] = $batches
                     ->orderByDesc('created_at')
                     ->limit(10)
                     ->get()
@@ -211,6 +292,45 @@ class QueueMonitor extends Page
         return filament()->auth()->user()?->can('run_scheduler') ?? false;
     }
 
+    /**
+     * The in-request "Process now" worker is opt-in: it can block a PHP-FPM
+     * process, so production hosts (which should run a real worker) keep it off.
+     */
+    public function canProcessInline(): bool
+    {
+        return $this->canManageQueueJobs()
+            && (bool) config('filament-system-tools.queue.allow_inline_worker', false);
+    }
+
+    /**
+     * Run a queue command and report a failing exit status instead of showing
+     * a success notification for work that never happened.
+     *
+     * @param  array<string, mixed>  $parameters
+     */
+    private function runQueueCommand(string $command, array $parameters = []): bool
+    {
+        try {
+            $exitCode = Artisan::call($command, $parameters);
+        } catch (Throwable $e) {
+            Notification::make()->title(__('Command failed'))->body($e->getMessage())->danger()->send();
+
+            return false;
+        }
+
+        if ($exitCode !== 0) {
+            Notification::make()
+                ->title(__('Command failed'))
+                ->body(trim(Artisan::output()) ?: __('The command exited with code :code.', ['code' => $exitCode]))
+                ->danger()
+                ->send();
+
+            return false;
+        }
+
+        return true;
+    }
+
     private function denyQueueAction(): void
     {
         Notification::make()->title(__('Unauthorized'))->danger()->send();
@@ -224,7 +344,10 @@ class QueueMonitor extends Page
             return;
         }
 
-        Artisan::call('queue:retry', ['id' => ['all']]);
+        if (! $this->runQueueCommand('queue:retry', ['id' => ['all']])) {
+            return;
+        }
+
         Notification::make()->title(__('All failed jobs queued for retry'))->success()->send();
     }
 
@@ -236,7 +359,10 @@ class QueueMonitor extends Page
             return;
         }
 
-        Artisan::call('queue:flush');
+        if (! $this->runQueueCommand('queue:flush')) {
+            return;
+        }
+
         Notification::make()->title(__('Failed jobs cleared'))->success()->send();
     }
 
@@ -252,7 +378,10 @@ class QueueMonitor extends Page
             return;
         }
 
-        Artisan::call('queue:retry', ['id' => [$uuid]]);
+        if (! $this->runQueueCommand('queue:retry', ['id' => [$uuid]])) {
+            return;
+        }
+
         Notification::make()->title(__('Job queued for retry'))->success()->send();
     }
 
@@ -268,8 +397,161 @@ class QueueMonitor extends Page
             return;
         }
 
-        Artisan::call('queue:forget', ['id' => $uuid]);
+        if (! $this->runQueueCommand('queue:forget', ['id' => $uuid])) {
+            return;
+        }
+
         Notification::make()->title(__('Failed job deleted'))->success()->send();
+    }
+
+    /** Pending (un-reserved) jobs waiting on the queue right now. */
+    public function pendingJobs(): int
+    {
+        $jobs = $this->jobsQuery();
+
+        if ($jobs === null) {
+            return 0;
+        }
+
+        try {
+            return (int) $jobs->whereNull('reserved_at')->count();
+        } catch (Throwable) {
+            return 0;
+        }
+    }
+
+    /**
+     * Jobs are queued but nothing is working them: pending > 0, none reserved
+     * (no worker mid-job), and the queue heartbeat is stale. The classic
+     * "I clicked things and nothing happens" — surfaced as a banner.
+     */
+    public function queueStalled(): bool
+    {
+        $jobs = $this->jobsQuery();
+
+        if ($jobs === null) {
+            return false;
+        }
+
+        try {
+            $pending = (int) (clone $jobs)->whereNull('reserved_at')->count();
+            $reserved = (int) (clone $jobs)->whereNotNull('reserved_at')->count();
+        } catch (Throwable) {
+            return false;
+        }
+
+        if ($pending < 1 || $reserved > 0) {
+            return false;
+        }
+
+        return ! app(BackgroundWorkerInspector::class)->queueIsAlive();
+    }
+
+    /**
+     * Drain the queue in this request — runs an in-process worker until empty
+     * or a short time budget elapses. For local/dev or a quick one-off catch-up
+     * when no long-running worker is configured; production should run a real
+     * worker (see the cron line on the cards above).
+     */
+    public function processPendingNow(): void
+    {
+        if (! $this->canProcessInline()) {
+            $this->denyQueueAction();
+
+            return;
+        }
+
+        $before = $this->pendingJobs();
+
+        if ($before < 1) {
+            Notification::make()->title(__('Nothing to process'))->body(__('The queue is empty.'))->success()->send();
+
+            return;
+        }
+
+        @set_time_limit(0);
+
+        try {
+            Artisan::call('queue:work', [
+                '--stop-when-empty' => true,
+                '--max-time' => 15,
+                '--max-jobs' => 25,
+                '--tries' => 1,
+                '--sleep' => 0,
+            ]);
+        } catch (Throwable $e) {
+            Notification::make()->title(__('Could not process the queue'))->body($e->getMessage())->danger()->send();
+
+            return;
+        }
+
+        $after = $this->pendingJobs();
+        $done = max(0, $before - $after);
+
+        Notification::make()
+            ->title(trans_choice('{0}No jobs processed|{1}Processed :count job|[2,*]Processed :count jobs', $done, ['count' => $done]))
+            ->body($after > 0
+                ? __(':count still waiting — click “Process now” again to continue.', ['count' => $after])
+                : __('The queue is now empty.'))
+            ->success()
+            ->send();
+    }
+
+    /**
+     * Delete the jobs still waiting on the configured queue store. Returns the
+     * number removed, or null when the driver keeps jobs out of reach.
+     */
+    public function deleteWaitingJobs(): ?int
+    {
+        $jobs = $this->jobsQuery();
+
+        return $jobs === null ? null : (int) $jobs->whereNull('reserved_at')->delete();
+    }
+
+    /**
+     * Drop waiting jobs without running them, e.g. a stale backlog. Reserved
+     * jobs are left alone: a worker is mid-execution on those, and deleting the
+     * row would only hide work that still runs to completion.
+     */
+    public function clearPendingJobs(): void
+    {
+        if (! $this->canManageQueueJobs()) {
+            $this->denyQueueAction();
+
+            return;
+        }
+
+        $jobs = $this->jobsQuery();
+
+        if ($jobs === null) {
+            Notification::make()
+                ->title(__('Not supported for this queue driver'))
+                ->body(__('Clearing only the waiting jobs requires the database queue driver; :driver stores jobs elsewhere.', [
+                    'driver' => $this->queueDriver() ?: __('this driver'),
+                ]))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        try {
+            $cleared = $this->deleteWaitingJobs();
+        } catch (Throwable $e) {
+            Notification::make()
+                ->title(__('Could not clear pending jobs'))
+                ->body($e->getMessage())
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        Notification::make()
+            ->title(trans_choice('{0}No pending jobs to clear|{1}Cleared :count pending job|[2,*]Cleared :count pending jobs', $cleared, ['count' => $cleared]))
+            ->body(__('Jobs already picked up by a worker were left untouched.'))
+            ->success()
+            ->send();
     }
 
     public function restartQueueWorkers(): void
@@ -280,7 +562,10 @@ class QueueMonitor extends Page
             return;
         }
 
-        Artisan::call('queue:restart');
+        if (! $this->runQueueCommand('queue:restart')) {
+            return;
+        }
+
         Notification::make()
             ->title(__('Restart signal sent'))
             ->body(__('Active queue workers will restart after their current job.'))

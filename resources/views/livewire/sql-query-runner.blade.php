@@ -17,6 +17,19 @@
         ></textarea>
     </div>
 
+    {{-- Read-only guard --}}
+    <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+        <input type="checkbox" wire:model.live="readOnly"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-white/10 dark:bg-white/5">
+        {{ __('Read-only mode (SELECT only)') }}
+    </label>
+
+    @unless ($readOnly)
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+            {{ __('Writes and DDL are enabled. Every executed statement is logged.') }}
+        </p>
+    @endunless
+
     {{-- Execute Button --}}
     <div class="flex items-center gap-3">
         <x-filament::button
@@ -24,6 +37,7 @@
             icon="heroicon-o-play"
             color="primary"
             wire:loading.attr="disabled"
+            :wire:confirm="$readOnly ? null : __('Run this write/DDL statement against the database?')"
         >
             <span wire:loading.remove wire:target="execute">{{ __('Execute') }}</span>
             <span wire:loading wire:target="execute">{{ __('Running...') }}</span>

@@ -1,7 +1,10 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools\Livewire;
 
+use Codenzia\FilamentSystemTools\Services\SmartMigration\TableName;
 use Filament\Actions;
 use Filament\Actions\Concerns\InteractsWithActions;
 use Filament\Actions\Contracts\HasActions;
@@ -26,6 +29,71 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
     public function mount(string $tableName): void
     {
         $this->tableName = $tableName;
+    }
+
+    public function canManageSchema(): bool
+    {
+        return filament()->auth()->user()?->can('manage_table_schema') ?? false;
+    }
+
+    /**
+     * Whitelist-validate the (client-hydrated) table name against the live
+     * table listing. Prevents SQL injection via the public $tableName property.
+     */
+    private function assertValidTable(): void
+    {
+        if (! $this->canManageSchema()) {
+            throw new \RuntimeException(__('Unauthorized'));
+        }
+
+        $tables = array_map(
+            fn (string $t) => TableName::strip($t),
+            Schema::getTableListing()
+        );
+
+        if (! in_array($this->tableName, $tables, true)) {
+            throw new \RuntimeException(__('Invalid table.'));
+        }
+    }
+
+    private function assertValidColumn(string $columnName): void
+    {
+        $columns = array_column($this->getColumns(), 'name');
+
+        if (! in_array($columnName, $columns, true)) {
+            throw new \RuntimeException(__('Invalid column.'));
+        }
+    }
+
+    private function assertValidIdentifier(string $identifier): void
+    {
+        if (! preg_match('/^[A-Za-z0-9_]+$/', $identifier)) {
+            throw new \RuntimeException(__('Invalid identifier.'));
+        }
+    }
+
+    /**
+     * Reject any column type that is not one of the fixed Select options,
+     * guarding against free-text injected via Livewire property hydration.
+     */
+    private function assertValidType(array $data): void
+    {
+        $type = strtoupper((string) ($data['type'] ?? ''));
+
+        if ($type !== '' && ! array_key_exists($type, $this->getTypeOptions())) {
+            throw new \RuntimeException(__('Invalid column type.'));
+        }
+    }
+
+    /**
+     * Quote a validated identifier, doubling any embedded quote char so a table
+     * or column name cannot break out of the quoted context in raw DDL.
+     */
+    private function quoteIdentifier(string $name): string
+    {
+        $quote = $this->isMysql() ? '`' : '"';
+
+        return $quote.str_replace($quote, $quote.$quote, $name).$quote;
     }
 
     /** @return array<array<string, mixed>> */
@@ -54,7 +122,8 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
             ->label(__('Add Column'))
             ->icon('heroicon-o-plus')
             ->color('primary')
-            ->form($this->getColumnForm())
+            ->visible(fn (): bool => $this->canManageSchema())
+            ->schema($this->getColumnForm())
             ->action(function (array $data): void {
                 $this->addColumn($data);
             });
@@ -68,7 +137,8 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
             ->iconButton()
             ->size('sm')
             ->color('gray')
-            ->form(fn (array $arguments): array => $this->getEditColumnForm())
+            ->visible(fn (): bool => $this->canManageSchema())
+            ->schema(fn (array $arguments): array => $this->getEditColumnForm())
             ->fillForm(function (array $arguments): array {
                 $columns = $this->getColumns();
                 $col = collect($columns)->firstWhere('name', $arguments['column'] ?? '');
@@ -98,6 +168,7 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
             ->iconButton()
             ->size('sm')
             ->color('danger')
+            ->visible(fn (): bool => $this->canManageSchema())
             ->requiresConfirmation()
             ->modalHeading(__('Delete Column'))
             ->modalDescription(fn (array $arguments): string => __('Are you sure you want to delete column ":column"? This cannot be undone.', ['column' => $arguments['column'] ?? '']))
@@ -113,9 +184,12 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
     private function addColumn(array $data): void
     {
         try {
+            $this->assertValidTable();
+            $this->assertValidIdentifier((string) ($data['name'] ?? ''));
+            $this->assertValidType($data);
             $definition = $this->buildColumnDefinition($data);
-            $quote = $this->isMysql() ? '`' : '"';
-            DB::statement("ALTER TABLE {$quote}{$this->tableName}{$quote} ADD COLUMN {$definition}");
+            $table = $this->quoteIdentifier($this->tableName);
+            DB::statement("ALTER TABLE {$table} ADD COLUMN {$definition}");
 
             Notification::make()
                 ->title(__('Column added'))
@@ -134,18 +208,25 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
     private function editColumn(string $oldName, array $data): void
     {
         try {
+            $this->assertValidTable();
+            $this->assertValidColumn($oldName);
+            $this->assertValidIdentifier((string) ($data['name'] ?? ''));
+            $this->assertValidType($data);
+
+            $table = $this->quoteIdentifier($this->tableName);
+
             if ($this->isMysql()) {
                 $definition = $this->buildColumnDefinition($data);
 
                 if ($oldName !== $data['name']) {
-                    DB::statement("ALTER TABLE `{$this->tableName}` CHANGE `{$oldName}` {$definition}");
+                    DB::statement("ALTER TABLE {$table} CHANGE {$this->quoteIdentifier($oldName)} {$definition}");
                 } else {
-                    DB::statement("ALTER TABLE `{$this->tableName}` MODIFY {$definition}");
+                    DB::statement("ALTER TABLE {$table} MODIFY {$definition}");
                 }
             } else {
                 // SQLite: only renaming is supported
                 if ($oldName !== $data['name']) {
-                    DB::statement("ALTER TABLE \"{$this->tableName}\" RENAME COLUMN \"{$oldName}\" TO \"{$data['name']}\"");
+                    DB::statement("ALTER TABLE {$table} RENAME COLUMN {$this->quoteIdentifier($oldName)} TO {$this->quoteIdentifier((string) $data['name'])}");
                 } else {
                     Notification::make()
                         ->title(__('No changes'))
@@ -174,8 +255,9 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
     private function deleteColumn(string $columnName): void
     {
         try {
-            $quote = $this->isMysql() ? '`' : '"';
-            DB::statement("ALTER TABLE {$quote}{$this->tableName}{$quote} DROP COLUMN {$quote}{$columnName}{$quote}");
+            $this->assertValidTable();
+            $this->assertValidColumn($columnName);
+            DB::statement("ALTER TABLE {$this->quoteIdentifier($this->tableName)} DROP COLUMN {$this->quoteIdentifier($columnName)}");
 
             Notification::make()
                 ->title(__('Column deleted'))
@@ -277,8 +359,7 @@ class TableSchemaViewer extends Component implements HasActions, HasForms
 
     private function buildColumnDefinition(array $data): string
     {
-        $quote = $this->isMysql() ? '`' : '"';
-        $name = $quote.$data['name'].$quote;
+        $name = $this->quoteIdentifier((string) $data['name']);
         $type = $data['type'];
 
         if (! empty($data['length']) && in_array($type, ['VARCHAR', 'CHAR', 'DECIMAL'], true)) {

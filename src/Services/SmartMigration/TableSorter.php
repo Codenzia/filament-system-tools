@@ -35,9 +35,9 @@ class TableSorter
             }
 
             foreach ($schema[$table]['foreign_keys'] as $fk) {
-                $referencedTable = $this->normalizeTableName($fk['on']);
+                $referencedTable = TableName::strip($fk['on']);
 
-                if ($referencedTable === $this->normalizeTableName($table)) {
+                if ($referencedTable === TableName::strip($table)) {
                     continue;
                 }
 
@@ -87,8 +87,8 @@ class TableSorter
             $nullableScore = array_fill_keys($remaining, 0);
             foreach ($remaining as $table) {
                 foreach ($schema[$table]['foreign_keys'] ?? [] as $column => $fk) {
-                    $ref = $this->normalizeTableName($fk['on']);
-                    if (! isset($remainingSet[$ref]) || $ref === $this->normalizeTableName($table)) {
+                    $ref = TableName::strip($fk['on']);
+                    if (! isset($remainingSet[$ref]) || $ref === TableName::strip($table)) {
                         continue;
                     }
                     $nullable = $schema[$table]['columns'][$column]['nullable'] ?? false;
@@ -114,19 +114,14 @@ class TableSorter
     public function getSelfReferences(string $table, array $foreignKeys): array
     {
         $selfRefs = [];
-        $normalizedTable = $this->normalizeTableName($table);
+        $normalizedTable = TableName::strip($table);
 
         foreach ($foreignKeys as $column => $fk) {
-            if ($this->normalizeTableName($fk['on']) === $normalizedTable) {
+            if (TableName::strip($fk['on']) === $normalizedTable) {
                 $selfRefs[] = $column;
             }
         }
 
         return $selfRefs;
-    }
-
-    private function normalizeTableName(string $table): string
-    {
-        return str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
     }
 }

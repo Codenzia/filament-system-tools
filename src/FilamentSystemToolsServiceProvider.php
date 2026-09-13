@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools;
 
 use Codenzia\FilamentSystemTools\Commands\DatabaseExportCommand;

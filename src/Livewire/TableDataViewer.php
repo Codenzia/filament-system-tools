@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools\Livewire;
 
 use Codenzia\FilamentSystemTools\Models\DynamicTableModel;
@@ -20,6 +22,8 @@ use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Illuminate\Contracts\View\View;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Livewire\Component;
@@ -28,18 +32,86 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
 {
     use InteractsWithActions;
     use InteractsWithForms;
-    use InteractsWithTable;
+    use InteractsWithTable {
+        getTableRecordKey as protected baseGetTableRecordKey;
+        resolveTableRecord as protected baseResolveTableRecord;
+    }
 
     public string $tableName = '';
+
+    /** @var list<string>|null */
+    private ?array $keyColumns = null;
 
     public function mount(string $tableName): void
     {
         $this->tableName = $tableName;
     }
 
+    public function canManageData(): bool
+    {
+        return (filament()->auth()->user()?->can('manage_table_data') ?? false)
+            && $this->keyColumns() !== [];
+    }
+
+    /**
+     * Columns that identify a single row of this table. Empty when the table
+     * declares no primary or unique key — such tables stay read-only, because
+     * any write would have to guess which rows it is touching.
+     *
+     * @return list<string>
+     */
+    public function keyColumns(): array
+    {
+        return $this->keyColumns ??= DynamicTableModel::keyColumnsFor($this->tableName);
+    }
+
+    /**
+     * @param  Model|array<string, mixed>  $record
+     */
+    public function getTableRecordKey(Model|array $record): string
+    {
+        $keyColumns = $this->keyColumns();
+
+        if (count($keyColumns) < 2 || is_array($record)) {
+            return $this->baseGetTableRecordKey($record);
+        }
+
+        $values = [];
+        foreach ($keyColumns as $column) {
+            $values[$column] = $record->{$column};
+        }
+
+        return base64_encode((string) json_encode($values));
+    }
+
+    /**
+     * @return Model|array<string, mixed>|null
+     */
+    protected function resolveTableRecord(?string $key): Model|array|null
+    {
+        $keyColumns = $this->keyColumns();
+
+        if ($key === null || count($keyColumns) < 2) {
+            return $this->baseResolveTableRecord($key);
+        }
+
+        $values = json_decode((string) base64_decode($key, true), true);
+
+        if (! is_array($values) || array_keys($values) !== $keyColumns) {
+            return null;
+        }
+
+        $query = DynamicTableModel::forTable($this->tableName)->newQuery();
+
+        foreach ($keyColumns as $column) {
+            $query->where($column, $values[$column]);
+        }
+
+        return $query->first();
+    }
+
     public function table(Table $table): Table
     {
-        $model = DynamicTableModel::forTable($this->tableName);
         $columnNames = Schema::getColumnListing($this->tableName);
         $columnInfo = collect(Schema::getColumns($this->tableName))->keyBy('name');
 
@@ -70,9 +142,10 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
                     ->label(__('Add Row'))
                     ->icon('heroicon-o-plus')
                     ->color('primary')
+                    ->visible(fn (): bool => $this->canManageData())
                     ->slideOver()
                     ->modalWidth(Width::FourExtraLarge)
-                    ->form($this->buildRowForm())
+                    ->schema($this->buildRowForm())
                     ->action(function (array $data): void {
                         $this->insertRow($data);
                     }),
@@ -82,9 +155,10 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
                     Actions\Action::make('editRow')
                         ->label(__('Edit'))
                         ->icon('heroicon-o-pencil-square')
+                        ->visible(fn (): bool => $this->canManageData())
                         ->slideOver()
                         ->modalWidth(Width::FourExtraLarge)
-                        ->form($this->buildRowForm())
+                        ->schema($this->buildRowForm())
                         ->fillForm(fn ($record): array => $record->toArray())
                         ->action(function (array $data, $record): void {
                             $this->updateRow($record, $data);
@@ -93,6 +167,7 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
                         ->label(__('Delete'))
                         ->icon('heroicon-o-trash')
                         ->color('danger')
+                        ->visible(fn (): bool => $this->canManageData())
                         ->requiresConfirmation()
                         ->action(function ($record): void {
                             $this->deleteRow($record);
@@ -101,6 +176,9 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
             ])
             ->paginated([10, 25, 50, 100])
             ->defaultPaginationPageOption(10)
+            ->description($this->keyColumns() === []
+                ? __('Read-only: this table has no primary or unique key, so a single row cannot be identified.')
+                : null)
             ->emptyStateHeading(__('No data'))
             ->emptyStateDescription(__('This table has no rows.'));
     }
@@ -111,6 +189,12 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
 
     private function insertRow(array $data): void
     {
+        if (! $this->canManageData()) {
+            Notification::make()->title(__('Unauthorized'))->danger()->send();
+
+            return;
+        }
+
         try {
             // Filter out empty values for auto-increment columns
             $columnInfo = collect(Schema::getColumns($this->tableName))->keyBy('name');
@@ -142,16 +226,16 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
 
     private function updateRow($record, array $data): void
     {
-        try {
-            $model = DynamicTableModel::forTable($this->tableName);
-            $primaryKey = $model->getKeyName();
-            $keyValue = $record->{$primaryKey};
+        if (! $this->canManageData()) {
+            Notification::make()->title(__('Unauthorized'))->danger()->send();
 
+            return;
+        }
+
+        try {
             $updateData = collect($data)->map(fn ($value) => $value === '' ? null : $value)->toArray();
 
-            DB::table($this->tableName)
-                ->where($primaryKey, $keyValue)
-                ->update($updateData);
+            $this->rowQuery($record)->update($updateData);
 
             Notification::make()
                 ->title(__('Row updated'))
@@ -168,12 +252,14 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
 
     private function deleteRow($record): void
     {
-        try {
-            $model = DynamicTableModel::forTable($this->tableName);
-            $primaryKey = $model->getKeyName();
-            $keyValue = $record->{$primaryKey};
+        if (! $this->canManageData()) {
+            Notification::make()->title(__('Unauthorized'))->danger()->send();
 
-            DB::table($this->tableName)->where($primaryKey, $keyValue)->delete();
+            return;
+        }
+
+        try {
+            $this->rowQuery($record)->delete();
 
             Notification::make()
                 ->title(__('Row deleted'))
@@ -188,11 +274,40 @@ class TableDataViewer extends Component implements HasActions, HasForms, HasTabl
         }
     }
 
+    /**
+     * Locate exactly one row. Every key column takes part, so a composite key
+     * such as (role_id, user_id) can never match its siblings.
+     *
+     * @param  Model  $record
+     */
+    private function rowQuery($record): Builder
+    {
+        $keyColumns = $this->keyColumns();
+
+        if ($keyColumns === []) {
+            throw new \RuntimeException(__('This table has no primary or unique key, so rows cannot be identified.'));
+        }
+
+        $query = DB::table($this->tableName);
+
+        foreach ($keyColumns as $column) {
+            $value = $record->{$column};
+
+            if ($value === null) {
+                throw new \RuntimeException(__('This row has no value for :column and cannot be identified.', ['column' => $column]));
+            }
+
+            $query->where($column, $value);
+        }
+
+        return $query;
+    }
+
     // ──────────────────────────────────────────────
     // Form Builder
     // ──────────────────────────────────────────────
 
-    /** @return array<\Filament\Forms\Components\Component> */
+    /** @return array<\Filament\Schemas\Components\Component> */
     private function buildRowForm(): array
     {
         $columns = Schema::getColumns($this->tableName);

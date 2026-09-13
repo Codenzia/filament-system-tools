@@ -39,6 +39,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Navigation Sort
+    |--------------------------------------------------------------------------
+    |
+    | Per-page sidebar order, so a host app can interleave these pages with its
+    | own. Override per app via config or the plugin's ->navigationSort([...]).
+    |
+    */
+    'navigation_sort' => [
+        'health' => 99,
+        'database_backup' => 101,
+        'smart_migration' => 102,
+        'queue_monitor' => 103,
+        'logs' => 103,
+        'about' => 104,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Backup Path
     |--------------------------------------------------------------------------
     |
@@ -133,9 +151,36 @@ return [
     |         ? ['column' => 'team_id', 'value' => Filament::getTenant()->id]
     |         : null,
     |
+    | When a resolver is configured the scope is enforced: it cannot be turned
+    | off from the UI, tables without the scope column are excluded unless they
+    | are listed in `global_tables`, and a resolver that cannot produce a scope
+    | refuses the export/import instead of falling back to the whole database.
+    |
+    | `identity_keys` declares which columns identify a record across databases
+    | (`'users' => ['external_id']`). Without a declared identity — or a unique
+    | index, or a non-auto-increment primary key — an import inserts new rows
+    | rather than matching on an auto-increment id that means nothing here.
+    |
     */
     'smart_migration' => [
         'scope_resolver' => null,
+        'global_tables' => [],
+        'identity_keys' => [],
+        'max_upload_bytes' => 64 * 1024 * 1024,
+        'import_lock_seconds' => 1800,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | SQL Runner
+    |--------------------------------------------------------------------------
+    |
+    | Maximum number of rows a query result renders. Larger results are
+    | truncated so a stray SELECT cannot exhaust memory in the browser tab.
+    |
+    */
+    'sql' => [
+        'max_rows' => 500,
     ],
 
     /*
@@ -152,6 +197,21 @@ return [
     */
     'background_workers' => [
         'heartbeats_enabled' => env('FILAMENT_SYSTEM_TOOLS_HEARTBEATS', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Queue
+    |--------------------------------------------------------------------------
+    |
+    | The Queue & Scheduler page can drain the queue with an in-request worker
+    | ("Process now"). Running a worker inside a web request can block the
+    | PHP-FPM process, so it is opt-in. Enable only on hosts without a
+    | long-running worker (typically local/dev).
+    |
+    */
+    'queue' => [
+        'allow_inline_worker' => env('FILAMENT_SYSTEM_TOOLS_INLINE_WORKER', false),
     ],
 
 ];

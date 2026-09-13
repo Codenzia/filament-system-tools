@@ -128,7 +128,11 @@ it('detects connection from filename and restores via file copy for raw SQLite b
 
     Process::fake();
 
-    (new DatabaseBackup)->restoreBackup($backupName);
+    $page = new DatabaseBackup;
+    $page->beginRestore($backupName);
+    $page->restoreConnection = 'live_sqlite';
+    $page->restoreConfirmation = 'live_sqlite';
+    $page->restoreBackup();
 
     // Fast path: no Process invocation should occur.
     Process::assertNothingRan();
@@ -152,7 +156,11 @@ it('routes restore through the service for gzipped backups', function () {
 
     Process::fake();
 
-    (new DatabaseBackup)->restoreBackup($backupName);
+    $page = new DatabaseBackup;
+    $page->beginRestore($backupName);
+    $page->restoreConnection = 'live_mysql';
+    $page->restoreConfirmation = 'live_mysql';
+    $page->restoreBackup();
 
     Process::assertRan(function (PendingProcess $p) {
         $cmd = backupCommand($p);

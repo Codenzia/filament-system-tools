@@ -79,6 +79,22 @@ Then rebuild assets with `npm run build`.
 
 ## Pages
 
+### Page-level access
+
+Every page **fails closed**: it is hidden from navigation and returns 403 unless the user holds its view permission. Grant these to the roles that should reach each page (e.g. via filament-shield):
+
+| Page | View permission |
+| --- | --- |
+| System Health | `view_system_health` |
+| System Logs | `view_system_logs` |
+| Database & Backups | `view_database_backups` |
+| Queue & Scheduler | `view_queue_monitor` |
+| Smart Data Migration | `view_smart_migration` |
+
+The **About** page stays open (it redacts sensitive server/disk info behind `view_full_system_info`). System Logs additionally suppresses log content unless `view_system_logs` is granted, so parsed stack traces never leak to unauthorised users.
+
+> **Upgrade note:** these page-level gates are new. After upgrading, assign the `view_*` permissions above or the pages will be hidden from every non-super-admin user.
+
 ### System Health
 
 The operational dashboard. Five panels in one page:
@@ -106,13 +122,15 @@ Real-time log viewer with level filtering, auto-refresh, clear, and download cap
 
 **Permission:** Clearing logs requires the `clear_system_logs` permission.
 
+> **Debug logging is application-wide.** The "Debug logging (30 min)" action (gated by `set_log_level`) lifts the default log channel to `debug` for **every request and every user** for 30 minutes, then reverts automatically. On a busy production app this can write large volumes of verbose data (including bound SQL parameters and request payloads) to disk — enable it only while actively troubleshooting and disable it as soon as you are done.
+
 ### Database & Backups
 
 Full database table browser with row counts and sizes. Supports:
 
 - **Table Schema Viewer** — inspect column definitions
 - **Table Data Viewer** — browse table rows with pagination
-- **SQL Query Runner** — execute raw `SELECT` queries against any table
+- **SQL Query Runner** — runs in **read-only mode by default**: a single `SELECT`/`WITH`(read)/`SHOW`/`DESCRIBE`/`EXPLAIN` statement, or an introspection `PRAGMA` (assignment forms such as `PRAGMA foreign_keys = OFF` are refused and audited). Turning read-only off enables INSERT/UPDATE/DELETE and DDL; multi-statement input is always rejected and every write/DDL statement is audit-logged (`system-tools.sql`) with the acting user id and quoted literals redacted. Results render up to `sql.max_rows` (500 by default) rows.
 - **Bulk Export** — download selected tables as `.sql` or `.json`
 - **Bulk Import** — upload a `.sql` or `.json` file and restore data
 - **Full Backup / Restore** — create, download, restore, and delete full database backups via the backup-creation modal:
@@ -120,9 +138,26 @@ Full database table browser with row counts and sizes. Supports:
   - Optional gzip compression (`.sql.gz`)
   - Optional per-table filtering (SQLite & MySQL only)
 
-Backups for SQLite without gzip use a fast file-copy path (no `sqlite3` binary required); everything else routes through the `DatabaseSqlTool` service which shells out to the appropriate native CLI tool (`sqlite3`, `mysqldump`/`mysql`, `pg_dump`/`psql`). **Database passwords are passed via environment variables** (`MYSQL_PWD`, `PGPASSWORD`) — never on the command line.
+Backups for SQLite without gzip use a fast file-copy path (no `sqlite3` binary required, and the copy's size is verified); everything else routes through the `DatabaseSqlTool` service which shells out to the appropriate native CLI tool (`sqlite3`, `mysqldump`/`mysql`, `pg_dump`/`psql`). **Database passwords are passed via environment variables** (`MYSQL_PWD`, `PGPASSWORD`) — never on the command line.
 
-Restore auto-detects the source connection from the backup filename, falls back to `database.default` for legacy backups, and uses file-copy when the backup is a raw SQLite database file.
+Dumps are written to a `.part` work file and only renamed into place after they are verified (non-empty, and a valid non-empty gzip stream when compressed), so a failed producer behind a successful compressor cannot leave a usable-looking backup. Restores refuse an empty or corrupt archive before invoking the client, `psql` runs with `ON_ERROR_STOP=1`, and `sqlite3` with `-bail`.
+
+**Permissions.** The Database & Backups actions are individually gated and must be granted to the relevant roles (e.g. via filament-shield):
+
+| Permission | Grants |
+| --- | --- |
+| `manage_table_schema` | View Schema action + adding, editing, and dropping columns (`TableSchemaViewer`) |
+| `manage_table_data` | View Data action + inserting, updating, and deleting rows (`TableDataViewer`) |
+| `execute_sql_queries` | Run SQL action |
+| `create_database_backup` | Create a full backup |
+| `download_database_backup` | Download a backup and use Bulk Export / Smart Export |
+| `restore_database_backup` | Restore a backup and use Bulk Import |
+| `delete_database_backup` | Delete a backup |
+| `run_data_import` | Run a Smart Data Migration import |
+
+> **Upgrade note:** `manage_table_schema` and `manage_table_data` are new gates for the table inspector. Existing deployments must assign them, otherwise the View Schema / View Data actions and their mutating operations will be hidden/blocked until the permissions are granted.
+
+Restore never guesses its target: choosing **Restore** opens an inline confirmation where the operator picks the destination connection (pre-selected from the backup filename when it still exists) and retypes its name. Raw SQLite database files are restored by file copy, and the copied file is size-checked.
 
 ### Smart Data Migration
 
@@ -134,8 +169,8 @@ A schema-aware export / import wizard for moving data between databases that may
    - Type-mismatch warnings
    - Suggested column renames (Levenshtein distance ≤ 3 + compatible types)
    - Tables that exist in the export but not in this DB (will be skipped)
-3. **Configure** — review and accept / reject rename suggestions, pick which tables to import, choose **Skip** vs. **Update** on duplicates, toggle timestamp preservation, optionally apply a configured row-level scope.
-4. **Importing** — runs inside a transaction with FK checks temporarily disabled. Tables are sorted topologically by FK dependency. Self-references and circular FKs are deferred and patched after the main pass. Auto-increment IDs are remapped so foreign keys land on the correct new IDs. Per-row errors stop after 100 to keep big imports moving. Per-table progress is streamed to the UI.
+3. **Configure** — review and accept / reject rename suggestions, pick which tables to import, choose **Skip** vs. **Update** on duplicates, toggle timestamp preservation. A configured scope is always enforced and cannot be switched off here.
+4. **Importing** — runs inside a transaction with FK checks temporarily disabled. Tables are sorted topologically by FK dependency. Self-references and circular FKs are deferred and patched after the main pass; a required reference that cannot be resolved aborts the import instead of committing a dangling link. Auto-increment IDs are remapped so foreign keys land on the correct new IDs. Existing records are matched by a declared identity, a unique index, or a non-auto-increment primary key (UUID/natural key) — never by a coincident auto-increment id, so an unrelated destination row is never overwritten. Per-row errors stop after 100 to keep big imports moving. Per-table progress is streamed to the UI. A rolled-back import reports zero records imported.
 5. **Complete** — summary cards (records imported, tables, skipped, errors) and an expandable list of warnings and errors.
 
 **Tenant scoping (optional).** If your app is multi-tenant, point the importer at the active tenant by setting a scope resolver in config — Smart Migration will filter exports to that tenant and stamp imported rows with the target tenant's id:
@@ -151,19 +186,34 @@ A schema-aware export / import wizard for moving data between databases that may
 
 Leave it as `null` to operate on the entire database.
 
+When a resolver is configured the scope is **enforced**: it cannot be turned off from the wizard, tables without the scope column are excluded from both export and import unless they are listed in `smart_migration.global_tables`, identity lookups and updates are constrained to the scope, and a resolver that cannot produce a scope refuses the operation instead of falling back to the whole database.
+
+```php
+'smart_migration' => [
+    'scope_resolver' => null,
+    // Tables to include in a scoped export/import even though they carry no scope column.
+    'global_tables' => [],
+    // Columns that identify a record across databases, e.g. 'users' => ['external_id'].
+    'identity_keys' => [],
+    'max_upload_bytes' => 64 * 1024 * 1024,
+    'import_lock_seconds' => 1800,
+],
+```
+
 The `Codenzia\FilamentSystemTools\Services\SmartMigration\` namespace exposes `SmartExporter`, `SmartImporter`, `SchemaIntrospector`, `SchemaDiffer`, `TableSorter`, `IdRemapper`, `SchemaDiffResult`, and `ImportResult` for direct use in code, jobs, or custom commands.
 
 ### Queue & Scheduler
 
 A real-time view of your job queue and scheduler:
 
-- **Summary cards** — driver, pending, processing, failed.
+- **Summary cards** — connection + driver, pending, processing, failed. Counts are read from the configured queue connection's own database connection and table; drivers that keep jobs elsewhere (Redis, SQS) say so instead of showing zeros.
 - **Per-queue breakdown** — total / waiting / processing for each queue name.
 - **Recent pending jobs** — last 10 with display name, queue, and attempts.
 - **Failed jobs** — last 20 with one-click **Retry** and **Delete** per UUID, plus bulk **Retry all failed** and **Flush failed jobs**.
 - **Job batches** — last 10 with progress percent.
 - **Scheduled tasks** — every event registered via the Laravel Scheduler with its cron expression and the **next run time** (computed via `Cron\CronExpression`).
-- **Worker controls** — `queue:restart` and `schedule:run` buttons.
+- **Worker controls** — `queue:restart` and `schedule:run` buttons; a failing command exit status is reported instead of a success message.
+- **Clear waiting jobs** — deletes only jobs no worker has reserved, so work already in flight is untouched (database queue driver only).
 
 The page reads from `jobs`, `failed_jobs`, and `job_batches` directly via `DB`, so it works regardless of queue driver as long as those tables exist. When they don't, the page degrades gracefully and shows zeros.
 
@@ -220,6 +270,17 @@ return [
 
     // Navigation group for all system tool pages
     'navigation_group' => 'System',
+
+    // Per-page sidebar order, so a host app can interleave these pages with its
+    // own. Override per app via config or the plugin's ->navigationSort([...]).
+    'navigation_sort' => [
+        'health'           => 99,
+        'database_backup'  => 101,
+        'smart_migration'  => 102,
+        'queue_monitor'    => 103,
+        'logs'             => 103,
+        'about'            => 104,
+    ],
 
     // Directory where database backups and CLI exports are written
     'backup_path' => storage_path('app/backups'),
@@ -278,9 +339,25 @@ FilamentSystemToolsPlugin::make()
     ->enableQueueMonitor(true)
     ->enableAbout(true)
     ->navigationGroup('System')
+    ->navigationSort([          // interleave these pages with your own
+        'database_backup' => 30,
+        'queue_monitor'   => 50,
+        'health'          => 60,
+        'logs'            => 70,
+        'about'           => 999,
+    ])
 ```
 
 All pages are enabled by default — pass `false` to any of the toggles to hide that page.
+
+### Navigation group & order
+
+`->navigationGroup('Tools')` re-homes every page to a different sidebar group, and
+`->navigationSort([...])` (keys: `health`, `database_backup`, `smart_migration`,
+`queue_monitor`, `logs`, `about`) reorders them — both merge over the config
+defaults, so a host app can slot these pages between its own. Either method writes
+the corresponding `config('filament-system-tools.navigation_group' | 'navigation_sort')`
+value, so you can also set them directly in the published config instead.
 
 ### Breaking change: `enableCache()` removed
 

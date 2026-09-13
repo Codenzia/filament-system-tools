@@ -30,13 +30,13 @@ class SmartExporter
         if (! empty($tableNames)) {
             $schema = array_intersect_key(
                 $schema,
-                array_flip(array_map([$this, 'stripSchemaPrefix'], $tableNames)),
+                array_flip(array_map([TableName::class, 'strip'], $tableNames)),
             );
 
             if (empty($schema)) {
                 $schema = array_filter(
                     $this->introspector->getTablesSchema(),
-                    fn (string $key): bool => in_array($this->stripSchemaPrefix($key), $tableNames, true),
+                    fn (string $key): bool => in_array(TableName::strip($key), $tableNames, true),
                     ARRAY_FILTER_USE_KEY,
                 );
             }
@@ -44,8 +44,17 @@ class SmartExporter
 
         $data = [];
         $normalizedSchema = [];
+        $unscopedTables = [];
+
         foreach ($schema as $table => $tableSchema) {
-            $stripped = $this->stripSchemaPrefix($table);
+            $stripped = TableName::strip($table);
+
+            if ($scope !== null && ! $this->isScopable($stripped, $scope['column'])) {
+                $unscopedTables[] = $stripped;
+
+                continue;
+            }
+
             $normalizedSchema[$stripped] = $tableSchema;
             $data[$stripped] = $this->exportTableData($stripped, $scope);
         }
@@ -58,10 +67,27 @@ class SmartExporter
                 'app_version' => config('filament-system-tools.release.version', config('app.version', '1.0.0')),
                 'database_driver' => DB::getDriverName(),
                 'scope' => $scope,
+                'excluded_unscoped_tables' => $unscopedTables,
             ],
             '_schema' => $normalizedSchema,
             '_data' => $data,
         ];
+    }
+
+    /**
+     * A scoped export may only include tables the scope can actually filter.
+     * Tables without the scope column are left out unless the host declared
+     * them global in `smart_migration.global_tables`.
+     */
+    private function isScopable(string $table, string $scopeColumn): bool
+    {
+        if (Schema::hasColumn($table, $scopeColumn)) {
+            return true;
+        }
+
+        $globalTables = config('filament-system-tools.smart_migration.global_tables', []);
+
+        return is_array($globalTables) && in_array($table, array_map('strval', $globalTables), true);
     }
 
     /**
@@ -77,10 +103,5 @@ class SmartExporter
         }
 
         return $query->get()->map(fn ($row): array => (array) $row)->values()->all();
-    }
-
-    private function stripSchemaPrefix(string $table): string
-    {
-        return str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
     }
 }

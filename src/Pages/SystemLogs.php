@@ -1,21 +1,29 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools\Pages;
 
 use Codenzia\FilamentSystemTools\FilamentSystemToolsPlugin;
+use Codenzia\FilamentSystemTools\Support\Bytes;
 use Filament\Actions;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class SystemLogs extends Page
 {
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
 
     protected static ?int $navigationSort = 103;
+
+    public static function getNavigationSort(): ?int
+    {
+        return config('filament-system-tools.navigation_sort.logs', 103);
+    }
 
     protected static ?string $slug = 'system/logs';
 
@@ -56,6 +64,12 @@ class SystemLogs extends Page
         return __('System Logs');
     }
 
+    public static function canAccess(): bool
+    {
+        return app()->bound('filament')
+            && (filament()->auth()->user()?->can('view_system_logs') ?? false);
+    }
+
     /**
      * Get parsed log entries from the current log file.
      *
@@ -63,13 +77,17 @@ class SystemLogs extends Page
      */
     public function getLogEntries(): array
     {
+        if (! static::canAccess()) {
+            return [];
+        }
+
         $logFile = $this->getCurrentLogFile();
 
         if (! $logFile || ! File::exists($logFile)) {
             return [];
         }
 
-        $content = File::get($logFile);
+        $content = $this->readLogTail($logFile);
         $entries = $this->parseLogContent($content);
 
         // Filter by level
@@ -107,7 +125,7 @@ class SystemLogs extends Page
             $files[] = [
                 'name' => $file->getFilename(),
                 'path' => $file->getPathname(),
-                'size' => $this->formatBytes($file->getSize()),
+                'size' => Bytes::format($file->getSize()),
                 'date' => date('Y-m-d H:i:s', $file->getMTime()),
             ];
         }
@@ -180,7 +198,7 @@ class SystemLogs extends Page
     /**
      * Download the current log file. Requires the download_system_logs permission.
      */
-    public function downloadLog(): StreamedResponse
+    public function downloadLog(): Response
     {
         abort_unless($this->canDownloadLog(), 403);
 
@@ -329,14 +347,39 @@ class SystemLogs extends Page
         return $entries;
     }
 
-    private function formatBytes(int $bytes, int $precision = 2): string
+    /**
+     * Read only the tail of a (potentially huge) log file so a multi-hundred-MB
+     * laravel.log is never loaded into memory. Reads at most $maxBytes from the
+     * end and drops the partial first line so parsing starts on an entry boundary.
+     */
+    private function readLogTail(string $path, int $maxBytes = 2097152): string
     {
-        $units = ['B', 'KB', 'MB', 'GB'];
+        $size = @filesize($path);
 
-        for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
-            $bytes /= 1024;
+        if ($size === false || $size === 0) {
+            return '';
         }
 
-        return round($bytes, $precision).' '.$units[$i];
+        if ($size <= $maxBytes) {
+            return (string) File::get($path);
+        }
+
+        $handle = @fopen($path, 'rb');
+
+        if ($handle === false) {
+            return '';
+        }
+
+        fseek($handle, -$maxBytes, SEEK_END);
+        $content = (string) fread($handle, $maxBytes);
+        fclose($handle);
+
+        // Drop the leading partial line — we likely started mid-entry.
+        $newline = strpos($content, "\n");
+        if ($newline !== false) {
+            $content = substr($content, $newline + 1);
+        }
+
+        return $content;
     }
 }

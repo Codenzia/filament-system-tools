@@ -18,21 +18,23 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-x divide-y divide-gray-100 dark:divide-gray-800">
                 @foreach($this->getHealthChecks() as $key => $check)
                     @php
-                        $color = match($check['status']) {
-                            'ok' => 'success',
-                            'warning' => 'warning',
-                            'error' => 'danger',
-                            default => 'info',
-                        };
                         $icon = match($check['status']) {
                             'ok' => 'heroicon-s-check-circle',
                             'warning' => 'heroicon-s-exclamation-triangle',
                             'error' => 'heroicon-s-x-circle',
                             default => 'heroicon-s-information-circle',
                         };
+                        // Static, fully-spelled class strings so the Tailwind JIT
+                        // can see them — never interpolate a class name.
+                        $iconColorClass = match($check['status']) {
+                            'ok' => 'text-success-500',
+                            'warning' => 'text-warning-500',
+                            'error' => 'text-danger-500',
+                            default => 'text-info-500',
+                        };
                     @endphp
                     <div class="px-4 py-3 flex items-start gap-3">
-                        <x-filament::icon :icon="$icon" class="w-5 h-5 shrink-0 text-{{ $color }}-500 mt-0.5" />
+                        <x-filament::icon :icon="$icon" @class(['w-5 h-5 shrink-0 mt-0.5', $iconColorClass]) />
                         <div class="min-w-0 flex-1">
                             <p class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ $check['label'] }}</p>
                             <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 break-words">{{ $check['detail'] }}</p>
@@ -90,8 +92,14 @@
                         <x-filament::icon icon="heroicon-o-bolt" class="w-4 h-4" />
                         {{ __('Optimize') }}
                     </button>
+                    <button wire:click="filamentOptimize"
+                        wire:loading.attr="disabled"
+                        class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-primary-600 text-white hover:bg-primary-500 dark:bg-primary-500 dark:hover:bg-primary-400 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
+                        <x-filament::icon icon="heroicon-o-sparkles" class="w-4 h-4" />
+                        {{ __('Filament optimize') }}
+                    </button>
                 @endif
-                @if ($this->canClearApplicationCache())
+                @if ($this->canClearAllCaches())
                     <button wire:click="clearAllCaches"
                         wire:loading.attr="disabled"
                         class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-gray-700 text-white hover:bg-gray-600 dark:bg-gray-600 dark:hover:bg-gray-500 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">

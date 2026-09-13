@@ -7,6 +7,41 @@
 
     <div class="space-y-6">
 
+        {{-- Stalled-queue alert: jobs waiting but no worker processing them --}}
+        @if ($this->queueStalled())
+            <div class="rounded-xl ring-1 ring-warning-300 dark:ring-warning-700 bg-warning-50 dark:bg-warning-900/20 p-4">
+                <div class="flex items-start gap-3">
+                    <x-filament::icon icon="heroicon-o-exclamation-triangle" class="w-5 h-5 text-warning-600 dark:text-warning-400 shrink-0 mt-0.5" />
+                    <div class="min-w-0 flex-1">
+                        <h3 class="text-sm font-semibold text-warning-800 dark:text-warning-200">{{ __('Jobs are piling up — no worker is running') }}</h3>
+                        <p class="text-xs text-warning-700 dark:text-warning-300 mt-1">
+                            {{ trans_choice('{1}:count job is waiting but nothing is processing it.|[2,*]:count jobs are waiting but nothing is processing them.', $stats['pending'], ['count' => $stats['pending']]) }}
+                            {{ __('Start a worker, or process / clear them here.') }}
+                        </p>
+                        <code class="block text-xs font-mono bg-white/60 dark:bg-black/30 text-warning-900 dark:text-warning-100 rounded p-2 mt-2 overflow-x-auto whitespace-pre">php artisan queue:work</code>
+                        @if ($this->canManageQueueJobs())
+                            <div class="flex flex-wrap gap-2 mt-3">
+                                @if ($this->canProcessInline())
+                                    <button wire:click="processPendingNow" wire:loading.attr="disabled" wire:target="processPendingNow"
+                                        class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-primary-600 text-white hover:bg-primary-500 dark:bg-primary-500 dark:hover:bg-primary-400 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
+                                        <x-filament::icon icon="heroicon-o-play" class="w-4 h-4" wire:loading.remove wire:target="processPendingNow" />
+                                        <x-filament::loading-indicator class="w-4 h-4" wire:loading wire:target="processPendingNow" />
+                                        <span wire:loading.remove wire:target="processPendingNow">{{ __('Process now') }}</span>
+                                        <span wire:loading wire:target="processPendingNow">{{ __('Processing…') }}</span>
+                                    </button>
+                                @endif
+                                <button wire:click="clearPendingJobs" wire:confirm="{{ __('Permanently drop the jobs still waiting? Jobs already picked up by a worker are kept.') }}"
+                                    class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-white text-danger-700 hover:bg-danger-50 dark:bg-gray-800 dark:text-danger-400 dark:hover:bg-gray-700 ring-1 ring-danger-300 dark:ring-danger-700 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
+                                    <x-filament::icon icon="heroicon-o-trash" class="w-4 h-4" />
+                                    {{ __('Clear waiting jobs') }}
+                                </button>
+                            </div>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        @endif
+
         {{-- Background Workers (cron status) --}}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
             @foreach (['scheduler' => __('Scheduler'), 'queue' => __('Queue worker')] as $key => $label)
@@ -64,9 +99,33 @@
                     </dl>
 
                     @if ($needsAttention)
-                        <div class="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                            <p class="text-xs text-gray-600 dark:text-gray-400 mb-1">{{ __('Add this cron line in your host panel') }}:</p>
-                            <code class="block text-xs font-mono bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded p-2 overflow-x-auto whitespace-pre">{{ $info['cron_line'] }}</code>
+                        <div class="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700" x-data="{ copied: false }">
+                            <p class="text-xs text-gray-600 dark:text-gray-400 mb-1">{{ __('Add this cron line in your host panel (keeps it running automatically)') }}:</p>
+                            <code x-ref="cron{{ $key }}" class="block text-xs font-mono bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded p-2 overflow-x-auto whitespace-pre">{{ $info['cron_line'] }}</code>
+
+                            <div class="mt-2 flex flex-wrap items-center gap-2">
+                                <button type="button"
+                                    x-on:click="navigator.clipboard.writeText($refs.cron{{ $key }}.innerText.trim()); copied = true; setTimeout(() => copied = false, 1500)"
+                                    class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 ring-1 ring-gray-300 dark:ring-gray-600 gap-1.5 px-3 py-1.5 text-xs inline-grid shadow-sm">
+                                    <x-filament::icon icon="heroicon-o-clipboard-document" class="w-4 h-4" />
+                                    <span x-show="!copied">{{ __('Copy') }}</span>
+                                    <span x-show="copied" x-cloak class="text-success-600 dark:text-success-400">{{ __('Copied!') }}</span>
+                                </button>
+
+                                @if ($key === 'queue' && $this->canProcessInline())
+                                    <button wire:click="processPendingNow" wire:loading.attr="disabled" wire:target="processPendingNow"
+                                        class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-primary-600 text-white hover:bg-primary-500 dark:bg-primary-500 dark:hover:bg-primary-400 gap-1.5 px-3 py-1.5 text-xs inline-grid shadow-sm">
+                                        <x-filament::icon icon="heroicon-o-play" class="w-4 h-4" wire:loading.remove wire:target="processPendingNow" />
+                                        <x-filament::loading-indicator class="w-4 h-4" wire:loading wire:target="processPendingNow" />
+                                        <span wire:loading.remove wire:target="processPendingNow">{{ __('Process queue now') }}</span>
+                                        <span wire:loading wire:target="processPendingNow">{{ __('Processing…') }}</span>
+                                    </button>
+                                @endif
+                            </div>
+
+                            @if ($key === 'queue' && $this->canManageQueueJobs())
+                                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ __('“Process queue now” runs the waiting jobs once, here — no need to open a terminal.') }}</p>
+                            @endif
                         </div>
                     @endif
                 </div>
@@ -76,8 +135,8 @@
         {{-- Summary Cards --}}
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div class="fi-section rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10 p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400">{{ __('Driver') }}</p>
-                <p class="text-base font-semibold text-gray-900 dark:text-gray-100 mt-1 font-mono">{{ $stats['driver'] }}</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400">{{ __('Connection') }}</p>
+                <p class="text-base font-semibold text-gray-900 dark:text-gray-100 mt-1 font-mono">{{ $stats['driver'] }} ({{ $this->queueDriver() }})</p>
             </div>
             <div class="fi-section rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10 p-4">
                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ __('Pending') }}</p>
@@ -92,6 +151,14 @@
                 <p class="text-2xl font-bold text-danger-600 dark:text-danger-400 mt-1">{{ $stats['failed'] }}</p>
             </div>
         </div>
+
+        @unless ($stats['metrics_supported'])
+            <div class="fi-section rounded-xl bg-warning-50 ring-1 ring-warning-200 dark:bg-warning-500/10 dark:ring-warning-500/30 p-4">
+                <p class="text-sm text-warning-800 dark:text-warning-300">
+                    {{ __('Job counts are only readable for the database queue driver. This host uses :driver, so pending and processing figures are not shown.', ['driver' => $this->queueDriver() ?: __('another driver')]) }}
+                </p>
+            </div>
+        @endunless
 
         {{-- Quick Actions --}}
         <div class="flex flex-wrap gap-2">
@@ -113,6 +180,22 @@
                     class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-primary-600 text-white hover:bg-primary-500 dark:bg-primary-500 dark:hover:bg-primary-400 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
                     <x-filament::icon icon="heroicon-o-play" class="w-4 h-4" />
                     {{ __('Run scheduler now') }}
+                </button>
+            @endif
+            @if ($stats['pending'] > 0 && $this->canManageQueueJobs())
+                @if ($this->canProcessInline())
+                    <button wire:click="processPendingNow" wire:loading.attr="disabled" wire:target="processPendingNow"
+                        class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-white text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 ring-1 ring-gray-300 dark:ring-gray-600 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
+                        <x-filament::icon icon="heroicon-o-play" class="w-4 h-4" wire:loading.remove wire:target="processPendingNow" />
+                        <x-filament::loading-indicator class="w-4 h-4" wire:loading wire:target="processPendingNow" />
+                        <span wire:loading.remove wire:target="processPendingNow">{{ __('Process now') }}</span>
+                        <span wire:loading wire:target="processPendingNow">{{ __('Processing…') }}</span>
+                    </button>
+                @endif
+                <button wire:click="clearPendingJobs" wire:confirm="{{ __('Permanently drop the jobs still waiting? Jobs already picked up by a worker are kept.') }}"
+                    class="fi-btn relative grid-flow-col items-center justify-center font-semibold outline-none transition rounded-lg bg-white text-danger-700 hover:bg-danger-50 dark:bg-gray-800 dark:text-danger-400 dark:hover:bg-gray-700 ring-1 ring-danger-300 dark:ring-danger-700 gap-1.5 px-3 py-2 text-sm inline-grid shadow-sm">
+                    <x-filament::icon icon="heroicon-o-trash" class="w-4 h-4" />
+                    {{ __('Clear waiting jobs') }}
                 </button>
             @endif
             @if($stats['failed'] > 0 && $this->canManageQueueJobs())

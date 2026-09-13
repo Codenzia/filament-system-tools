@@ -63,7 +63,7 @@ class SchemaIntrospector
 
         return array_values(array_filter(
             Schema::getTableListing(),
-            fn (string $table): bool => ! in_array($this->stripSchemaPrefix($table), $excluded, true),
+            fn (string $table): bool => ! in_array(TableName::strip($table), $excluded, true),
         ));
     }
 
@@ -77,7 +77,7 @@ class SchemaIntrospector
     {
         $indexes = [];
 
-        foreach (Schema::getIndexes($this->stripSchemaPrefix($table)) as $index) {
+        foreach (Schema::getIndexes(TableName::strip($table)) as $index) {
             if (($index['unique'] ?? false) && ! ($index['primary'] ?? false)) {
                 $indexes[] = $index['columns'];
             }
@@ -88,7 +88,7 @@ class SchemaIntrospector
 
     public function isAutoIncrementId(string $table): bool
     {
-        $stripped = $this->stripSchemaPrefix($table);
+        $stripped = TableName::strip($table);
 
         foreach (Schema::getColumns($stripped) as $column) {
             if ($column['name'] === 'id') {
@@ -106,7 +106,7 @@ class SchemaIntrospector
     {
         $columns = [];
 
-        foreach (Schema::getColumns($this->stripSchemaPrefix($table)) as $column) {
+        foreach (Schema::getColumns(TableName::strip($table)) as $column) {
             $columns[$column['name']] = [
                 'type' => $column['type_name'] ?? $column['type'] ?? 'string',
                 'nullable' => (bool) ($column['nullable'] ?? false),
@@ -127,7 +127,7 @@ class SchemaIntrospector
     {
         $foreignKeys = [];
 
-        foreach (Schema::getForeignKeys($this->stripSchemaPrefix($table)) as $fk) {
+        foreach (Schema::getForeignKeys(TableName::strip($table)) as $fk) {
             if (count($fk['columns']) === 1 && count($fk['foreign_columns']) === 1) {
                 $foreignKeys[$fk['columns'][0]] = [
                     'references' => $fk['foreign_columns'][0],
@@ -137,10 +137,5 @@ class SchemaIntrospector
         }
 
         return $foreignKeys;
-    }
-
-    private function stripSchemaPrefix(string $table): string
-    {
-        return str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
     }
 }

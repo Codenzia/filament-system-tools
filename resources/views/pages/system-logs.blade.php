@@ -110,26 +110,24 @@
                     <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
                         @foreach ($entries as $index => $entry)
                             @php
-                                $levelColors = [
-                                    'emergency' => 'bg-red-100 text-red-700 ring-red-600/10 dark:bg-red-500/15 dark:text-red-400 dark:ring-red-500/20',
-                                    'alert' => 'bg-red-100 text-red-700 ring-red-600/10 dark:bg-red-500/15 dark:text-red-400 dark:ring-red-500/20',
-                                    'critical' => 'bg-red-100 text-red-700 ring-red-600/10 dark:bg-red-500/15 dark:text-red-400 dark:ring-red-500/20',
-                                    'error' => 'bg-orange-100 text-orange-700 ring-orange-600/10 dark:bg-orange-500/15 dark:text-orange-400 dark:ring-orange-500/20',
-                                    'warning' => 'bg-amber-100 text-amber-700 ring-amber-600/10 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-500/20',
-                                    'notice' => 'bg-blue-100 text-blue-700 ring-blue-600/10 dark:bg-blue-500/15 dark:text-blue-400 dark:ring-blue-500/20',
-                                    'info' => 'bg-green-100 text-green-700 ring-green-600/10 dark:bg-green-500/15 dark:text-green-400 dark:ring-green-500/20',
-                                    'debug' => 'bg-gray-100 text-gray-700 ring-gray-600/10 dark:bg-gray-500/15 dark:text-gray-400 dark:ring-gray-500/20',
-                                ];
-                                $color = $levelColors[strtolower($entry['level'])] ?? $levelColors['debug'];
+                                // Filament badge colors ship their own compiled CSS,
+                                // so they render in package blades regardless of the
+                                // host app's Tailwind safelist (raw red/orange/etc. do not).
+                                $levelBadgeColor = match (strtolower($entry['level'])) {
+                                    'emergency', 'alert', 'critical', 'error' => 'danger',
+                                    'warning' => 'warning',
+                                    'notice', 'info' => 'info',
+                                    default => 'gray',
+                                };
                             @endphp
                             <tr x-data="{ expanded: false }" class="hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
                                 <td class="px-4 py-2.5 text-xs text-gray-500 dark:text-gray-400 font-mono whitespace-nowrap align-top">
                                     {{ $entry['timestamp'] }}
                                 </td>
                                 <td class="px-4 py-2.5 align-top">
-                                    <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{ $color }}">
+                                    <x-filament::badge :color="$levelBadgeColor">
                                         {{ strtoupper($entry['level']) }}
-                                    </span>
+                                    </x-filament::badge>
                                 </td>
                                 <td class="px-4 py-2.5 align-top">
                                     <p class="text-gray-950 dark:text-gray-200 break-all font-mono text-xs leading-relaxed cursor-pointer"

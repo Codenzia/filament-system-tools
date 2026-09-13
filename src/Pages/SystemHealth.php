@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Codenzia\FilamentSystemTools\Pages;
 
 use Codenzia\FilamentSystemTools\FilamentSystemToolsPlugin;
+use Codenzia\FilamentSystemTools\Support\Bytes;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Support\Facades\Artisan;
@@ -19,6 +20,11 @@ class SystemHealth extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-heart';
 
     protected static ?int $navigationSort = 99;
+
+    public static function getNavigationSort(): ?int
+    {
+        return config('filament-system-tools.navigation_sort.health', 99);
+    }
 
     protected static ?string $slug = 'system/health';
 
@@ -44,6 +50,12 @@ class SystemHealth extends Page
     public function getTitle(): string
     {
         return __('System Health');
+    }
+
+    public static function canAccess(): bool
+    {
+        return app()->bound('filament')
+            && (filament()->auth()->user()?->can('view_system_health') ?? false);
     }
 
     /* ──────────────────────────────────────────────
@@ -212,7 +224,7 @@ class SystemHealth extends Page
             __('Memory Limit') => (string) (ini_get('memory_limit') ?: '—'),
             __('Max Execution Time') => (string) (ini_get('max_execution_time') ?: '0').'s',
             __('Upload Max Filesize') => (string) (ini_get('upload_max_filesize') ?: '—'),
-            __('Disk Free') => $this->formatBytes((int) (disk_free_space(base_path()) ?: 0)),
+            __('Disk Free') => Bytes::format((int) (disk_free_space(base_path()) ?: 0)),
         ];
     }
 
@@ -242,7 +254,7 @@ class SystemHealth extends Page
             }
         }
 
-        $this->cacheSize = $this->formatBytes($size);
+        $this->cacheSize = Bytes::format($size);
     }
 
     public function canClearApplicationCache(): bool
@@ -295,16 +307,41 @@ class SystemHealth extends Page
         Notification::make()->title(__('Unauthorized'))->danger()->send();
     }
 
+    /**
+     * `optimize:clear` clears application, config, route, view, event and
+     * compiled caches, so it requires every one of those capabilities.
+     */
+    public function canClearAllCaches(): bool
+    {
+        return $this->canClearApplicationCache()
+            && $this->canClearConfigCache()
+            && $this->canClearRouteCache()
+            && $this->canClearViewCache()
+            && $this->canClearEventCache()
+            && $this->canClearCompiled();
+    }
+
     public function clearAllCaches(): void
     {
-        if (! $this->canClearApplicationCache()) {
+        if (! $this->canClearAllCaches()) {
             $this->denyAction();
 
             return;
         }
 
-        Artisan::call('optimize:clear');
+        $exitCode = Artisan::call('optimize:clear');
         $this->refreshCacheSize();
+
+        if ($exitCode !== 0) {
+            Notification::make()
+                ->title(__('Could not clear all caches'))
+                ->body(__('The command exited with code :code.', ['code' => $exitCode]))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
         Notification::make()->title(__('All caches cleared'))->success()->send();
     }
 
@@ -397,6 +434,20 @@ class SystemHealth extends Page
         Artisan::call('optimize');
         $this->refreshCacheSize();
         Notification::make()->title(__('Application optimized'))->success()->send();
+    }
+
+    /** Cache Filament's components, icons and blade-icon set — distinct from `optimize`. */
+    public function filamentOptimize(): void
+    {
+        if (! $this->canOptimizeApplication()) {
+            $this->denyAction();
+
+            return;
+        }
+
+        Artisan::call('filament:optimize');
+        $this->refreshCacheSize();
+        Notification::make()->title(__('Filament components & icons cached'))->success()->send();
     }
 
     /* ──────────────────────────────────────────────
@@ -500,21 +551,5 @@ class SystemHealth extends Page
         $link = public_path('storage');
 
         return is_link($link) || (file_exists($link) && is_dir($link));
-    }
-
-    private function formatBytes(int $bytes, int $precision = 2): string
-    {
-        if ($bytes <= 0) {
-            return '0 B';
-        }
-
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $i = 0;
-
-        for (; $bytes > 1024 && $i < count($units) - 1; $i++) {
-            $bytes /= 1024;
-        }
-
-        return round($bytes, $precision).' '.$units[$i];
     }
 }

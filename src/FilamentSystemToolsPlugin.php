@@ -76,6 +76,26 @@ class FilamentSystemToolsPlugin implements Plugin
     public function navigationGroup(?string $group): static
     {
         $this->navigationGroup = $group;
+        if ($group !== null) {
+            config(['filament-system-tools.navigation_group' => $group]);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Override the per-page sidebar order. Keys: health, database_backup,
+     * smart_migration, queue_monitor, logs, about. Merges over defaults so a host
+     * app can interleave these pages with its own.
+     *
+     * @param  array<string, int>  $sorts
+     */
+    public function navigationSort(array $sorts): static
+    {
+        config(['filament-system-tools.navigation_sort' => array_merge(
+            (array) config('filament-system-tools.navigation_sort', []),
+            $sorts,
+        )]);
 
         return $this;
     }

@@ -1,6 +1,9 @@
 <?php
 
 use Codenzia\FilamentSystemTools\Pages\SystemLogs;
+use Codenzia\FilamentSystemTools\Support\Bytes;
+use Illuminate\Support\Facades\File;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 it('returns correct level colors', function () {
     expect(SystemLogs::getLevelColor('emergency'))->toBe('red')
@@ -97,15 +100,12 @@ it('parses log entries with timezone offsets', function () {
 });
 
 it('formats bytes correctly', function () {
-    $page = new SystemLogs;
-    $method = new ReflectionMethod($page, 'formatBytes');
-
     // Note: the loop condition uses > (strict greater-than), so boundary values stay in lower unit
-    expect($method->invoke($page, 0))->toBe('0 B')
-        ->and($method->invoke($page, 1023))->toBe('1023 B')
-        ->and($method->invoke($page, 1025))->toBe('1 KB')
-        ->and($method->invoke($page, 1048577))->toBe('1 MB')
-        ->and($method->invoke($page, 1073741825))->toBe('1 GB');
+    expect(Bytes::format(0))->toBe('0 B')
+        ->and(Bytes::format(1023))->toBe('1023 B')
+        ->and(Bytes::format(1025))->toBe('1 KB')
+        ->and(Bytes::format(1048577))->toBe('1 MB')
+        ->and(Bytes::format(1073741825))->toBe('1 GB');
 });
 
 it('has correct default property values', function () {
@@ -114,4 +114,26 @@ it('has correct default property values', function () {
     expect($page->lines)->toBe(100)
         ->and($page->level)->toBe('all')
         ->and($page->autoRefresh)->toBeFalse();
+});
+
+it('downloads a real log file without a return-type error', function () {
+    $dir = storage_path('logs');
+    File::ensureDirectoryExists($dir);
+    $logFile = $dir.DIRECTORY_SEPARATOR.'laravel.log';
+    File::put($logFile, '[2026-09-07 10:00:00] testing.ERROR: boom');
+
+    $page = new class extends SystemLogs
+    {
+        public function canDownloadLog(): bool
+        {
+            return true;
+        }
+    };
+
+    $response = $page->downloadLog();
+
+    expect($response)->toBeInstanceOf(BinaryFileResponse::class)
+        ->and($response->getFile()->getPathname())->toBe(realpath($logFile));
+
+    File::delete($logFile);
 });

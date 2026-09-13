@@ -9,9 +9,12 @@ use Codenzia\FilamentSystemTools\Services\SmartMigration\SchemaDiffer;
 use Codenzia\FilamentSystemTools\Services\SmartMigration\SchemaIntrospector;
 use Codenzia\FilamentSystemTools\Services\SmartMigration\SmartExporter;
 use Codenzia\FilamentSystemTools\Services\SmartMigration\SmartImporter;
+use Codenzia\FilamentSystemTools\Services\SmartMigration\TableName;
 use Codenzia\FilamentSystemTools\Services\SmartMigration\TableSorter;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Illuminate\Support\Facades\Cache;
+use Livewire\Attributes\Locked;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SmartDataMigration extends Page
@@ -19,6 +22,11 @@ class SmartDataMigration extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-arrow-path-rounded-square';
 
     protected static ?int $navigationSort = 102;
+
+    public static function getNavigationSort(): ?int
+    {
+        return config('filament-system-tools.navigation_sort.smart_migration', 102);
+    }
 
     protected static ?string $slug = 'system/smart-migration';
 
@@ -28,6 +36,7 @@ class SmartDataMigration extends Page
     public string $step = 'upload';
 
     /** Path to the temp file holding the parsed export payload. */
+    #[Locked]
     public ?string $tempFilePath = null;
 
     /** @var array{total_tables?: int, matched?: int, partial?: int, skipped?: int} */
@@ -46,8 +55,6 @@ class SmartDataMigration extends Page
     public array $selectedTables = [];
 
     public bool $preserveTimestamps = true;
-
-    public bool $applyScope = true;
 
     /** @var 'skip'|'update' */
     public string $onDuplicate = 'skip';
@@ -82,12 +89,29 @@ class SmartDataMigration extends Page
         return __('Smart Data Migration');
     }
 
+    public static function canAccess(): bool
+    {
+        return app()->bound('filament')
+            && (filament()->auth()->user()?->can('view_smart_migration') ?? false);
+    }
+
     public function handleUpload(string $fileContent, string $fileName): void
     {
         try {
+            // A replacement upload must not leave the previous payload behind.
+            $this->cleanupTempFile();
+
             $content = base64_decode($fileContent, true);
             if ($content === false) {
                 throw new \RuntimeException(__('Could not decode the uploaded file.'));
+            }
+
+            $maxBytes = (int) config('filament-system-tools.smart_migration.max_upload_bytes', 64 * 1024 * 1024);
+
+            if ($maxBytes > 0 && strlen($content) > $maxBytes) {
+                throw new \RuntimeException(__('The export file is larger than the :size MB import limit.', [
+                    'size' => (int) round($maxBytes / 1048576),
+                ]));
             }
 
             $data = json_decode($content, true);
@@ -138,7 +162,7 @@ class SmartDataMigration extends Page
 
         $normalizedCurrentSchema = [];
         foreach ($currentSchema as $table => $info) {
-            $stripped = str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
+            $stripped = TableName::strip($table);
             $normalizedCurrentSchema[$stripped] = $info;
         }
 
@@ -246,7 +270,7 @@ class SmartDataMigration extends Page
             $currentSchema = $introspector->getTablesSchema();
             $normalizedSchema = [];
             foreach ($currentSchema as $table => $info) {
-                $stripped = str_contains($table, '.') ? substr($table, strrpos($table, '.') + 1) : $table;
+                $stripped = TableName::strip($table);
                 $normalizedSchema[$stripped] = $info;
             }
 
@@ -279,7 +303,29 @@ class SmartDataMigration extends Page
 
     private function processImport(): void
     {
+        // Import runs synchronously in this request and disables FK checks while
+        // mutating multiple tables. Guard against concurrent imports corrupting
+        // each other: the lock must outlive the work it protects, so the request
+        // is bounded by the same budget instead of running unlimited.
+        $lockSeconds = max(60, (int) config('filament-system-tools.smart_migration.import_lock_seconds', 1800));
+
+        $lock = Cache::lock('system-tools.smart-import', $lockSeconds);
+
+        if (! $lock->get()) {
+            $this->importErrors = [__('Another import is already running. Please wait for it to finish.')];
+            $this->step = 'complete';
+            Notification::make()->title(__('Import already in progress'))->warning()->send();
+
+            return;
+        }
+
+        @set_time_limit($lockSeconds);
+
         try {
+            if (! $this->isManagedTempFile($this->tempFilePath)) {
+                throw new \RuntimeException(__('Export file not found. Please re-upload.'));
+            }
+
             $exportData = json_decode((string) file_get_contents($this->tempFilePath), true);
             if (! is_array($exportData)) {
                 throw new \RuntimeException(__('Could not parse the temporary export file.'));
@@ -291,7 +337,7 @@ class SmartDataMigration extends Page
                 $exportData,
                 $this->columnMappings,
                 [
-                    'scope' => $this->applyScope ? $this->resolveScope() : null,
+                    'scope' => $this->resolveScope(),
                     'preserve_timestamps' => $this->preserveTimestamps,
                     'on_duplicate' => $this->onDuplicate,
                     'tables' => $this->selectedTables,
@@ -333,16 +379,26 @@ class SmartDataMigration extends Page
             $this->importErrors = [$e->getMessage()];
             $this->step = 'complete';
             Notification::make()->title(__('Import failed'))->body($e->getMessage())->danger()->send();
+        } finally {
+            $lock->release();
         }
     }
 
-    public function smartExport(): StreamedResponse
+    public function smartExport(): ?StreamedResponse
     {
         abort_unless($this->canSmartExport(), 403);
 
         $exporter = new SmartExporter(new SchemaIntrospector);
 
-        $data = $exporter->export($this->resolveScope());
+        try {
+            $scope = $this->resolveScope();
+        } catch (\Throwable $e) {
+            Notification::make()->title(__('Export failed'))->body($e->getMessage())->danger()->send();
+
+            return null;
+        }
+
+        $data = $exporter->export($scope);
         $timestamp = now()->format('Y-m-d_His');
 
         return response()->streamDownload(
@@ -386,35 +442,72 @@ class SmartDataMigration extends Page
     /**
      * Resolve the row-level scope for export/import. Reads
      * `filament-system-tools.smart_migration.scope_resolver` — a callable that
-     * returns `['column' => 'team_id', 'value' => 1]` or null. When unset,
-     * Smart Migration operates on the full database without scoping.
+     * returns `['column' => 'team_id', 'value' => 1]`. When unset, Smart
+     * Migration operates on the full database without scoping. A configured
+     * resolver that cannot produce a scope fails closed: the operation is
+     * refused rather than falling back to the whole database.
      *
      * @return array{column: string, value: int|string}|null
      */
-    private function resolveScope(): ?array
+    public function resolveScope(): ?array
     {
         $resolver = config('filament-system-tools.smart_migration.scope_resolver');
 
-        if (is_callable($resolver)) {
-            $scope = $resolver();
-
-            if (is_array($scope) && isset($scope['column'], $scope['value'])) {
-                return [
-                    'column' => (string) $scope['column'],
-                    'value' => $scope['value'],
-                ];
-            }
+        if (! is_callable($resolver)) {
+            return null;
         }
 
-        return null;
+        $scope = $resolver();
+
+        if (! is_array($scope) || ! isset($scope['column'], $scope['value'])) {
+            throw new \RuntimeException(__('The configured migration scope could not be resolved. Select a tenant and try again.'));
+        }
+
+        return [
+            'column' => (string) $scope['column'],
+            'value' => $scope['value'],
+        ];
+    }
+
+    /**
+     * The enforced scope as `column = value`, or null when the configured
+     * resolver cannot produce one right now.
+     */
+    public function scopeDescription(): ?string
+    {
+        try {
+            $scope = $this->resolveScope();
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $scope === null ? null : $scope['column'].' = '.$scope['value'];
     }
 
     private function cleanupTempFile(): void
     {
-        if ($this->tempFilePath && file_exists($this->tempFilePath)) {
+        if ($this->isManagedTempFile($this->tempFilePath) && file_exists($this->tempFilePath)) {
             @unlink($this->tempFilePath);
         }
 
         $this->tempFilePath = null;
+    }
+
+    /**
+     * Confirm a path points at a Smart Migration temp file inside storage/app,
+     * preventing arbitrary file read/delete via a tampered $tempFilePath.
+     */
+    private function isManagedTempFile(?string $path): bool
+    {
+        if (! $path) {
+            return false;
+        }
+
+        $real = realpath($path);
+        $base = realpath(storage_path('app'));
+
+        return $real !== false && $base !== false
+            && str_starts_with($real, $base.DIRECTORY_SEPARATOR)
+            && str_contains(basename($real), 'smart_migration_');
     }
 }

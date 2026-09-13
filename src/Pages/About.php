@@ -1,8 +1,11 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Codenzia\FilamentSystemTools\Pages;
 
 use Codenzia\FilamentSystemTools\FilamentSystemToolsPlugin;
+use Codenzia\FilamentSystemTools\Support\Bytes;
 use Filament\Pages\Page;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -12,6 +15,11 @@ class About extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-information-circle';
 
     protected static ?int $navigationSort = 104;
+
+    public static function getNavigationSort(): ?int
+    {
+        return config('filament-system-tools.navigation_sort.about', 104);
+    }
 
     protected static ?string $slug = 'system/about';
 
@@ -240,9 +248,9 @@ class About extends Page
                 $diskUsed = $diskTotal - $diskFree;
                 $usagePercent = $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0;
 
-                $info[__('Disk Total')] = $this->formatBytes((int) $diskTotal);
-                $info[__('Disk Used')] = $this->formatBytes((int) $diskUsed);
-                $info[__('Disk Free')] = $this->formatBytes((int) $diskFree);
+                $info[__('Disk Total')] = Bytes::format((int) $diskTotal);
+                $info[__('Disk Used')] = Bytes::format((int) $diskUsed);
+                $info[__('Disk Free')] = Bytes::format((int) $diskFree);
                 $info[__('Disk Usage')] = $usagePercent.'%';
             } catch (\Throwable) {
                 $info[__('Disk')] = __('Unable to read disk info');
@@ -256,7 +264,7 @@ class About extends Page
             foreach (File::allFiles($logsPath) as $file) {
                 $logsSize += $file->getSize();
             }
-            $info[__('Logs Size')] = $this->formatBytes($logsSize);
+            $info[__('Logs Size')] = Bytes::format($logsSize);
         }
 
         return $info;
@@ -287,16 +295,5 @@ class About extends Page
         }
 
         return __('Unknown');
-    }
-
-    private function formatBytes(int $bytes, int $precision = 2): string
-    {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-
-        for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
-            $bytes /= 1024;
-        }
-
-        return round($bytes, $precision).' '.$units[$i];
     }
 }

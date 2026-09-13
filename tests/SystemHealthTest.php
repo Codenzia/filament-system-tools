@@ -116,5 +116,6 @@ it('exposes all expected cache action methods', function () {
         ->and(method_exists($page, 'clearViewCache'))->toBeTrue()
         ->and(method_exists($page, 'clearEventCache'))->toBeTrue()
         ->and(method_exists($page, 'clearCompiled'))->toBeTrue()
-        ->and(method_exists($page, 'optimizeApplication'))->toBeTrue();
+        ->and(method_exists($page, 'optimizeApplication'))->toBeTrue()
+        ->and(method_exists($page, 'filamentOptimize'))->toBeTrue();
 });

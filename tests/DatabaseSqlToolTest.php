@@ -25,6 +25,24 @@ function shArg(string $value): string
     return escapeshellarg($value);
 }
 
+/**
+ * Helper: fake a dump producer that writes the work file the exporter verifies
+ * before promoting it to the final path.
+ */
+function fakeDumpProducer(string $finalPath, bool $gzip = false, ?string $contents = null): void
+{
+    $contents ??= '-- dump
+CREATE TABLE t (id INTEGER);
+';
+    $payload = $gzip ? (string) gzencode($contents) : $contents;
+
+    Process::fake(function () use ($finalPath, $payload) {
+        file_put_contents($finalPath.'.part', $payload);
+
+        return Process::result('');
+    });
+}
+
 beforeEach(function () {
     config()->set('database.connections.test_sqlite', [
         'driver' => 'sqlite',
@@ -60,7 +78,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
-    foreach (['dump.sql', 'dump.sql.gz'] as $name) {
+    foreach (['dump.sql', 'dump.sql.gz', 'dump.sql.part', 'dump.sql.gz.part'] as $name) {
         $path = tmpFilePath($name);
         if (File::exists($path)) {
             File::delete($path);
@@ -76,9 +94,9 @@ it('rejects unknown connections', function () {
 });
 
 it('builds a sqlite export command using sqlite3 .dump', function () {
-    Process::fake();
-
     $dumpPath = tmpFilePath('dump.sql');
+    fakeDumpProducer($dumpPath);
+
     $sqlitePath = tmpFilePath('test.sqlite');
 
     app(DatabaseSqlTool::class)->export(
@@ -93,12 +111,12 @@ it('builds a sqlite export command using sqlite3 .dump', function () {
         return str_contains($cmd, 'sqlite3')
             && str_contains($cmd, shArg($sqlitePath))
             && str_contains($cmd, shArg('.dump'))
-            && str_contains($cmd, '> '.shArg($dumpPath));
+            && str_contains($cmd, '> '.shArg($dumpPath.'.part'));
     });
 });
 
 it('pipes sqlite export through gzip when requested', function () {
-    Process::fake();
+    fakeDumpProducer(tmpFilePath('dump.sql.gz'), gzip: true);
 
     app(DatabaseSqlTool::class)->export(
         connection: 'test_sqlite',
@@ -106,11 +124,11 @@ it('pipes sqlite export through gzip when requested', function () {
         gzip: true,
     );
 
-    Process::assertRan(fn (PendingProcess $p) => str_contains(processCommand($p), '| gzip -c > '));
+    Process::assertRan(fn (PendingProcess $p) => str_contains(processCommand($p), '| '.shArg('gzip').' -c > '));
 });
 
 it('appends specific tables to the sqlite .dump directive', function () {
-    Process::fake();
+    fakeDumpProducer(tmpFilePath('dump.sql'));
 
     app(DatabaseSqlTool::class)->export(
         connection: 'test_sqlite',
@@ -122,7 +140,7 @@ it('appends specific tables to the sqlite .dump directive', function () {
 });
 
 it('builds a mysql export command without leaking the password on the command line', function () {
-    Process::fake();
+    fakeDumpProducer(tmpFilePath('dump.sql'));
 
     app(DatabaseSqlTool::class)->export(
         connection: 'test_mysql',
@@ -144,7 +162,7 @@ it('builds a mysql export command without leaking the password on the command li
 });
 
 it('limits mysql export to specific tables when provided', function () {
-    Process::fake();
+    fakeDumpProducer(tmpFilePath('dump.sql'));
 
     app(DatabaseSqlTool::class)->export(
         connection: 'test_mysql',
@@ -162,7 +180,7 @@ it('limits mysql export to specific tables when provided', function () {
 });
 
 it('builds a pg_dump command without leaking the password on the command line', function () {
-    Process::fake();
+    fakeDumpProducer(tmpFilePath('dump.sql'));
 
     app(DatabaseSqlTool::class)->export(
         connection: 'test_pgsql',
@@ -204,7 +222,7 @@ it('builds a sqlite import command using stdin redirect', function () {
     Process::assertRan(function (PendingProcess $p) use ($dumpPath, $sqlitePath) {
         $cmd = processCommand($p);
 
-        return str_contains($cmd, 'sqlite3 '.shArg($sqlitePath).' < '.shArg($dumpPath));
+        return str_contains($cmd, shArg('sqlite3').' -bail '.shArg($sqlitePath).' < '.shArg($dumpPath));
     });
 });
 
@@ -212,7 +230,7 @@ it('pipes gzipped imports through gunzip', function () {
     $gzPath = tmpFilePath('dump.sql.gz');
     $sqlitePath = tmpFilePath('test.sqlite');
 
-    File::put($gzPath, 'fake gzipped bytes');
+    File::put($gzPath, (string) gzencode('CREATE TABLE foo (id INTEGER);'));
     Process::fake();
 
     app(DatabaseSqlTool::class)->import(
@@ -223,8 +241,8 @@ it('pipes gzipped imports through gunzip', function () {
     Process::assertRan(function (PendingProcess $p) use ($gzPath, $sqlitePath) {
         $cmd = processCommand($p);
 
-        return str_contains($cmd, 'gunzip -c '.shArg($gzPath))
-            && str_contains($cmd, '| sqlite3 '.shArg($sqlitePath));
+        return str_contains($cmd, shArg('gunzip').' -c '.shArg($gzPath))
+            && str_contains($cmd, '| '.shArg('sqlite3').' -bail '.shArg($sqlitePath));
     });
 });
 
@@ -247,6 +265,72 @@ it('rejects in-memory sqlite for export', function () {
         connection: 'memory',
         path: tmpFilePath('dump.sql'),
     ))->toThrow(RuntimeException::class, 'file-backed database path');
+});
+
+it('fails the export when the producer wrote nothing', function () {
+    Process::fake();
+
+    expect(fn () => app(DatabaseSqlTool::class)->export(
+        connection: 'test_mysql',
+        path: tmpFilePath('dump.sql'),
+    ))->toThrow(RuntimeException::class, 'produced no output');
+
+    expect(File::exists(tmpFilePath('dump.sql')))->toBeFalse();
+});
+
+it('fails the export when the compressor produced an empty archive', function () {
+    fakeDumpProducer(tmpFilePath('dump.sql.gz'), gzip: true, contents: '');
+
+    expect(fn () => app(DatabaseSqlTool::class)->export(
+        connection: 'test_mysql',
+        path: tmpFilePath('dump.sql.gz'),
+        gzip: true,
+    ))->toThrow(RuntimeException::class, 'decompresses to nothing');
+});
+
+it('leaves no work file behind when the export fails', function () {
+    Process::fake(['*' => Process::result(output: '', errorOutput: 'boom', exitCode: 1)]);
+
+    expect(fn () => app(DatabaseSqlTool::class)->export(
+        connection: 'test_mysql',
+        path: tmpFilePath('dump.sql'),
+    ))->toThrow(RuntimeException::class);
+
+    expect(File::exists(tmpFilePath('dump.sql').'.part'))->toBeFalse();
+});
+
+it('refuses to import an empty dump', function () {
+    $path = tmpFilePath('dump.sql');
+    File::put($path, '');
+    Process::fake();
+
+    expect(fn () => app(DatabaseSqlTool::class)->import(
+        path: $path,
+        connection: 'test_sqlite',
+    ))->toThrow(RuntimeException::class, 'is empty');
+
+    Process::assertNothingRan();
+});
+
+it('refuses to import a corrupt gzip dump', function () {
+    $path = tmpFilePath('dump.sql.gz');
+    File::put($path, 'not really gzip');
+    Process::fake();
+
+    expect(fn () => app(DatabaseSqlTool::class)->import(
+        path: $path,
+        connection: 'test_sqlite',
+    ))->toThrow(RuntimeException::class, 'not a valid gzip archive');
+});
+
+it('stops psql at the first error during import', function () {
+    $path = tmpFilePath('dump.sql');
+    File::put($path, 'SELECT 1;');
+    Process::fake();
+
+    app(DatabaseSqlTool::class)->import(path: $path, connection: 'test_pgsql');
+
+    Process::assertRan(fn (PendingProcess $p) => str_contains(processCommand($p), '--set='.shArg('ON_ERROR_STOP=1')));
 });
 
 it('surfaces helpful guidance when mysqldump is missing', function () {

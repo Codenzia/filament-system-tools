@@ -271,13 +271,19 @@
                 <h3 class="text-base font-semibold text-gray-950 dark:text-white">{{ __('Import Options') }}</h3>
 
                 @if(config('filament-system-tools.smart_migration.scope_resolver'))
-                <label class="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" wire:model.live="applyScope" class="fi-checkbox-input rounded border-gray-300 text-primary-600 shadow-sm focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700">
+                <div class="flex items-start gap-3 rounded-lg bg-gray-50 p-3 dark:bg-gray-800">
+                    <x-filament::icon icon="heroicon-o-lock-closed" class="w-5 h-5 text-gray-400 dark:text-gray-500 shrink-0" />
                     <div>
-                        <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ __('Apply current scope') }}</span>
-                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ __('Override the configured scope column on every imported row.') }}</p>
+                        <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ __('Scope enforced') }}</span>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">
+                            @if($this->scopeDescription())
+                                {{ __('Every imported row is stamped with :scope. Tables without that column are not imported.', ['scope' => $this->scopeDescription()]) }}
+                            @else
+                                {{ __('The scope could not be resolved, so the import will be refused. Select a tenant and reload this page.') }}
+                            @endif
+                        </p>
                     </div>
-                </label>
+                </div>
                 @endif
 
                 <label class="flex items-center gap-3 cursor-pointer">

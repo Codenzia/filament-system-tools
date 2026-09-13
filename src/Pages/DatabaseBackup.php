@@ -7,6 +7,8 @@ namespace Codenzia\FilamentSystemTools\Pages;
 use Codenzia\FilamentSystemTools\FilamentSystemToolsPlugin;
 use Codenzia\FilamentSystemTools\Models\DatabaseTable;
 use Codenzia\FilamentSystemTools\Services\DatabaseSqlTool;
+use Codenzia\FilamentSystemTools\Support\Bytes;
+use Codenzia\FilamentSystemTools\Support\SqlStatementSplitter;
 use Filament\Actions;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Toggle;
@@ -24,6 +26,7 @@ use Filament\Tables\Table;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
+use Livewire\Attributes\Locked;
 use Livewire\WithFileUploads;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -39,11 +42,26 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
     protected static ?int $navigationSort = 101;
 
+    public static function getNavigationSort(): ?int
+    {
+        return config('filament-system-tools.navigation_sort.database_backup', 101);
+    }
+
     protected static ?string $slug = 'system/backups';
 
     protected string $view = 'filament-system-tools::pages.database-backup';
 
     public mixed $importFile = null;
+
+    /** Backup staged for restore, set server-side by beginRestore(). */
+    #[Locked]
+    public ?string $restoreFile = null;
+
+    /** Connection the staged backup will be restored into. */
+    public ?string $restoreConnection = null;
+
+    /** The operator must retype the target connection name before restoring. */
+    public string $restoreConfirmation = '';
 
     public static function getNavigationGroup(): ?string
     {
@@ -58,6 +76,12 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     public function getTitle(): string
     {
         return __('Database & Backups');
+    }
+
+    public static function canAccess(): bool
+    {
+        return app()->bound('filament')
+            && (filament()->auth()->user()?->can('view_database_backups') ?? false);
     }
 
     // ──────────────────────────────────────────────
@@ -83,7 +107,9 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     ->alignEnd(),
                 TextColumn::make('size')
                     ->label(__('Size'))
-                    ->state(fn ($record): string => $this->getTableSize($record->name))
+                    ->state(fn ($record): string => $record->getPreloadedSize() !== null
+                        ? Bytes::format($record->getPreloadedSize())
+                        : $this->getTableSize($record->name))
                     ->sortable()
                     ->alignEnd(),
             ])
@@ -92,6 +118,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     Actions\Action::make('viewSchema')
                         ->label(__('View Schema'))
                         ->icon('heroicon-o-table-cells')
+                        ->visible(fn (): bool => filament()->auth()->user()?->can('manage_table_schema') ?? false)
                         ->slideOver()
                         ->modalWidth(Width::SevenExtraLarge)
                         ->modalHeading(fn ($record): string => __('Schema: :table', ['table' => $record->name]))
@@ -103,6 +130,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                     Actions\Action::make('viewData')
                         ->label(__('View Data'))
                         ->icon('heroicon-o-rectangle-stack')
+                        ->visible(fn (): bool => filament()->auth()->user()?->can('manage_table_data') ?? false)
                         ->slideOver()
                         ->modalWidth(Width::SevenExtraLarge)
                         ->modalHeading(fn ($record): string => __('Data: :table', ['table' => $record->name]))
@@ -156,9 +184,10 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         $connection = config('database.default');
 
         if ($connection === 'sqlite') {
-            $count = DB::table($table)->count();
-
-            return $this->formatBytes($count * 200);
+            // SQLite has no cheap per-table byte size (dbstat is optional), and a
+            // COUNT(*) per listed row is an N+1. Show a dash rather than a made-up
+            // figure; the whole-DB size is available in getDatabaseStats().
+            return '—';
         }
 
         $database = config("database.connections.{$connection}.database");
@@ -167,7 +196,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             [$database, $table]
         );
 
-        return $this->formatBytes($result[0]->size ?? 0);
+        return Bytes::format($result[0]->size ?? 0);
     }
 
     // ──────────────────────────────────────────────
@@ -180,7 +209,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
         if ($connection === 'sqlite') {
             $dbPath = config('database.connections.sqlite.database');
-            $size = File::exists($dbPath) ? $this->formatBytes(File::size($dbPath)) : 'N/A';
+            $size = File::exists($dbPath) ? Bytes::format(File::size($dbPath)) : 'N/A';
             $tables = DB::select("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
         } else {
             $database = config("database.connections.{$connection}.database");
@@ -188,7 +217,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 'SELECT SUM(data_length + index_length) as size FROM information_schema.tables WHERE table_schema = ?',
                 [$database]
             );
-            $size = $this->formatBytes($result[0]->size ?? 0);
+            $size = Bytes::format($result[0]->size ?? 0);
             $tables = DB::select(
                 'SELECT table_name as name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name',
                 [$database]
@@ -252,6 +281,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
     private function exportAsSql(array $tables, string $timestamp): StreamedResponse
     {
+        $tables = array_values(array_intersect($tables, $this->getAvailableTables()));
         $appName = config('filament-system-tools.app_name', config('app.name', 'Laravel'));
         $filename = strtolower(str_replace(' ', '_', $appName))."_export_{$timestamp}.sql";
         $connection = config('database.default');
@@ -282,7 +312,8 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                         echo "{$createSql};\n\n";
                     }
                 } else {
-                    $result = DB::selectOne("SHOW CREATE TABLE `{$table}`");
+                    $escapedTable = str_replace('`', '``', $table);
+                    $result = DB::selectOne("SHOW CREATE TABLE `{$escapedTable}`");
                     if ($result) {
                         $createKey = 'Create Table';
                         $createSql = $result->$createKey ?? '';
@@ -337,23 +368,33 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
     private function exportAsJson(array $tables, string $timestamp): StreamedResponse
     {
+        $tables = array_values(array_intersect($tables, $this->getAvailableTables()));
         $appName = config('filament-system-tools.app_name', config('app.name', 'Laravel'));
         $filename = strtolower(str_replace(' ', '_', $appName))."_export_{$timestamp}.json";
 
         return response()->streamDownload(function () use ($tables): void {
-            $data = [
-                '_meta' => [
-                    'exported_at' => now()->toIso8601String(),
-                    'driver' => config('database.default'),
-                    'tables' => $tables,
-                ],
+            $meta = [
+                'exported_at' => now()->toIso8601String(),
+                'driver' => config('database.default'),
+                'tables' => $tables,
             ];
 
+            // Stream row-by-row so large tables do not exhaust memory.
+            echo '{"_meta":'.json_encode($meta, JSON_UNESCAPED_UNICODE);
+
             foreach ($tables as $table) {
-                $data[$table] = DB::table($table)->get()->map(fn ($row) => (array) $row)->toArray();
+                echo ','.json_encode($table, JSON_UNESCAPED_UNICODE).':[';
+
+                $first = true;
+                DB::table($table)->lazy(500)->each(function ($row) use (&$first): void {
+                    echo ($first ? '' : ',').json_encode((array) $row, JSON_UNESCAPED_UNICODE);
+                    $first = false;
+                });
+
+                echo ']';
             }
 
-            echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            echo '}';
         }, $filename, [
             'Content-Type' => 'application/json',
         ]);
@@ -419,13 +460,25 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 $result = $this->importSql($contents);
             }
 
+            $skipped = $result['skipped'] ?? 0;
+
+            $body = __(':tables tables imported, :rows total rows.', [
+                'tables' => $result['tables'],
+                'rows' => $result['rows'],
+            ]);
+
+            if ($skipped > 0) {
+                $body .= ' '.__(':skipped row(s) skipped.', ['skipped' => $skipped]);
+
+                if (! empty($result['errors'])) {
+                    $body .= ' '.implode(' ', $result['errors']);
+                }
+            }
+
             Notification::make()
                 ->title(__('Import completed!'))
-                ->body(__(':tables tables imported, :rows total rows.', [
-                    'tables' => $result['tables'],
-                    'rows' => $result['rows'],
-                ]))
-                ->success()
+                ->body($body)
+                ->{$skipped > 0 ? 'warning' : 'success'}()
                 ->send();
         } catch (Throwable $e) {
             Notification::make()
@@ -438,7 +491,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         $this->importFile = null;
     }
 
-    /** @return array{tables: int, rows: int} */
+    /** @return array{tables: int, rows: int, skipped: int, errors: list<string>} */
     private function importJson(string $contents): array
     {
         $data = json_decode($contents, true);
@@ -449,17 +502,18 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
         $tableCount = 0;
         $rowCount = 0;
-        $connection = config('database.default');
+        $skipped = 0;
+        $errors = [];
+        $maxErrors = 10;
+        $driver = DB::connection()->getDriverName();
+
+        // SQLite ignores PRAGMA foreign_keys inside a transaction, so constraint
+        // state is set before the transaction opens and restored on every path.
+        $this->disableForeignKeyChecks($driver);
 
         DB::beginTransaction();
 
         try {
-            if ($connection === 'sqlite') {
-                DB::statement('PRAGMA foreign_keys = OFF');
-            } else {
-                DB::statement('SET FOREIGN_KEY_CHECKS = 0');
-            }
-
             foreach ($data as $table => $rows) {
                 if ($table === '_meta' || ! is_array($rows) || empty($rows)) {
                     continue;
@@ -477,26 +531,25 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                         try {
                             DB::table($table)->insert($row);
                             $rowCount++;
-                        } catch (Throwable) {
-                            // Skip duplicate rows
+                        } catch (Throwable $e) {
+                            $skipped++;
+                            if (count($errors) < $maxErrors) {
+                                $errors[] = "{$table}: ".$e->getMessage();
+                            }
                         }
                     }
                 }
-            }
-
-            if ($connection === 'sqlite') {
-                DB::statement('PRAGMA foreign_keys = ON');
-            } else {
-                DB::statement('SET FOREIGN_KEY_CHECKS = 1');
             }
 
             DB::commit();
         } catch (Throwable $e) {
             DB::rollBack();
             throw $e;
+        } finally {
+            $this->enableForeignKeyChecks($driver);
         }
 
-        return ['tables' => $tableCount, 'rows' => $rowCount];
+        return ['tables' => $tableCount, 'rows' => $rowCount, 'skipped' => $skipped, 'errors' => $errors];
     }
 
     /** @return array{tables: int, rows: int} */
@@ -504,15 +557,11 @@ class DatabaseBackup extends Page implements HasForms, HasTable
     {
         $tableCount = 0;
         $rowCount = 0;
+        $driver = DB::connection()->getDriverName();
 
-        $lines = explode("\n", $contents);
-        $cleanLines = array_filter($lines, fn (string $line): bool => ! str_starts_with(trim($line), '--'));
-        $sql = implode("\n", $cleanLines);
+        $statements = $this->splitSqlStatements($contents);
 
-        $statements = array_filter(
-            array_map('trim', explode(';', $sql)),
-            fn (string $s): bool => ! empty($s)
-        );
+        $this->disableForeignKeyChecks($driver);
 
         DB::beginTransaction();
 
@@ -537,9 +586,48 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         } catch (Throwable $e) {
             DB::rollBack();
             throw $e;
+        } finally {
+            $this->enableForeignKeyChecks($driver);
         }
 
         return ['tables' => $tableCount, 'rows' => $rowCount];
+    }
+
+    /**
+     * Constraint handling differs per driver; the connection's driver decides,
+     * never the connection *name* (a connection called "primary" is not MySQL).
+     */
+    private function disableForeignKeyChecks(string $driver): void
+    {
+        match ($driver) {
+            'sqlite' => DB::statement('PRAGMA foreign_keys = OFF'),
+            'mysql', 'mariadb' => DB::statement('SET FOREIGN_KEY_CHECKS = 0'),
+            'pgsql' => DB::statement("SET session_replication_role = 'replica'"),
+            default => null,
+        };
+    }
+
+    private function enableForeignKeyChecks(string $driver): void
+    {
+        match ($driver) {
+            'sqlite' => DB::statement('PRAGMA foreign_keys = ON'),
+            'mysql', 'mariadb' => DB::statement('SET FOREIGN_KEY_CHECKS = 1'),
+            'pgsql' => DB::statement("SET session_replication_role = 'origin'"),
+            default => null,
+        };
+    }
+
+    /**
+     * Statement-aware SQL splitter. Tracks single/double-quote and backtick
+     * state plus line and block comments so `;` characters inside quoted
+     * literals do not split a statement mid-way (the naive explode(';') did,
+     * corrupting any INSERT containing a semicolon).
+     *
+     * @return list<string>
+     */
+    private function splitSqlStatements(string $sql): array
+    {
+        return SqlStatementSplitter::split($sql);
     }
 
     // ──────────────────────────────────────────────
@@ -559,9 +647,14 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         $backups = [];
 
         foreach ($files as $file) {
+            // In-progress dumps are written as .part and only renamed once verified.
+            if (str_ends_with($file->getFilename(), '.part')) {
+                continue;
+            }
+
             $backups[] = [
                 'name' => $file->getFilename(),
-                'size' => $this->formatBytes($file->getSize()),
+                'size' => Bytes::format($file->getSize()),
                 'date' => date('Y-m-d H:i:s', $file->getMTime()),
                 'path' => $file->getPathname(),
             ];
@@ -693,7 +786,18 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             // Fast path: SQLite, no gzip, no table filter — file copy needs no binary.
             if ($driver === 'sqlite' && ! $gzip && $tables === []) {
                 $dbPath = (string) config("database.connections.{$connection}.database");
-                File::copy($dbPath, $filepath);
+
+                if (! File::copy($dbPath, $filepath)) {
+                    throw new \RuntimeException(__('The database file could not be copied.'));
+                }
+
+                clearstatcache(true, $filepath);
+
+                if (! File::exists($filepath) || File::size($filepath) !== File::size($dbPath)) {
+                    File::delete($filepath);
+
+                    throw new \RuntimeException(__('The backup copy is incomplete and has been discarded.'));
+                }
             } else {
                 app(DatabaseSqlTool::class)->export(
                     connection: $connection,
@@ -717,17 +821,50 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         }
     }
 
+    /**
+     * Resolve a user-supplied backup filename to a real path that is provably
+     * inside the backup directory AND present in the current listing. Returns
+     * null for anything else — guards against path traversal and dropping in
+     * files the app did not create.
+     */
+    private function resolveBackupPath(string $filename): ?string
+    {
+        $backupPath = (string) config('filament-system-tools.backup_path', storage_path('app/backups'));
+        $baseReal = realpath($backupPath);
+
+        if ($baseReal === false) {
+            return null;
+        }
+
+        $real = realpath($backupPath.DIRECTORY_SEPARATOR.basename($filename));
+
+        if ($real === false || ! str_starts_with($real, $baseReal.DIRECTORY_SEPARATOR)) {
+            return null;
+        }
+
+        if (! in_array(basename($real), array_column($this->getBackupFiles(), 'name'), true)) {
+            return null;
+        }
+
+        return $real;
+    }
+
     public function downloadBackup(string $filename): BinaryFileResponse
     {
         abort_unless($this->canDownloadBackup(), 403);
 
-        $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
-        $filepath = $backupPath.DIRECTORY_SEPARATOR.basename($filename);
+        $filepath = $this->resolveBackupPath($filename);
+
+        abort_if($filepath === null, 404);
 
         return response()->download($filepath);
     }
 
-    public function restoreBackup(string $filename): void
+    /**
+     * Stage a backup for restore. The operator still has to pick the target
+     * connection and retype its name — a restore never runs off one click.
+     */
+    public function beginRestore(string $filename): void
     {
         if (! $this->canRestoreBackup()) {
             Notification::make()
@@ -738,10 +875,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             return;
         }
 
-        $backupPath = (string) config('filament-system-tools.backup_path', storage_path('app/backups'));
-        $filepath = $backupPath.DIRECTORY_SEPARATOR.basename($filename);
-
-        if (! File::exists($filepath)) {
+        if ($this->resolveBackupPath($filename) === null) {
             Notification::make()
                 ->title(__('Backup not found'))
                 ->danger()
@@ -750,7 +884,67 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             return;
         }
 
-        $connection = $this->detectConnectionFromFilename($filename) ?? (string) config('database.default');
+        $this->restoreFile = basename($filename);
+        $this->restoreConnection = $this->detectConnectionFromFilename($this->restoreFile);
+        $this->restoreConfirmation = '';
+    }
+
+    public function cancelRestore(): void
+    {
+        $this->restoreFile = null;
+        $this->restoreConnection = null;
+        $this->restoreConfirmation = '';
+    }
+
+    /**
+     * Restore the staged backup into the explicitly chosen target connection.
+     * The target is never inferred: an unnamed or unconfirmed target aborts.
+     */
+    public function restoreBackup(): void
+    {
+        if (! $this->canRestoreBackup()) {
+            Notification::make()
+                ->title(__('Unauthorized'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        $filename = $this->restoreFile;
+        $filepath = $filename !== null ? $this->resolveBackupPath($filename) : null;
+
+        if ($filename === null || $filepath === null) {
+            Notification::make()
+                ->title(__('Backup not found'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        $connection = $this->restoreConnection;
+
+        if ($connection === null || ! array_key_exists($connection, $this->getConnectionOptions())) {
+            Notification::make()
+                ->title(__('Select a target database'))
+                ->body(__('Choose the connection this backup should be restored into.'))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
+        if (trim($this->restoreConfirmation) !== $connection) {
+            Notification::make()
+                ->title(__('Confirmation does not match'))
+                ->body(__('Type :connection to confirm the restore target.', ['connection' => $connection]))
+                ->danger()
+                ->send();
+
+            return;
+        }
+
         $driver = (string) config("database.connections.{$connection}.driver");
         $isGzipped = str_ends_with($filename, '.gz');
 
@@ -758,7 +952,16 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             // Fast path: raw SQLite database file (legacy backup format) — file copy.
             if ($driver === 'sqlite' && ! $isGzipped && $this->looksLikeSqliteBinary($filepath)) {
                 $dbPath = (string) config("database.connections.{$connection}.database");
-                File::copy($filepath, $dbPath);
+
+                if (! File::copy($filepath, $dbPath)) {
+                    throw new \RuntimeException(__('The database file could not be replaced.'));
+                }
+
+                clearstatcache(true, $dbPath);
+
+                if (! File::exists($dbPath) || File::size($dbPath) !== File::size($filepath)) {
+                    throw new \RuntimeException(__('The restored database file does not match the backup.'));
+                }
             } else {
                 app(DatabaseSqlTool::class)->import(
                     path: $filepath,
@@ -768,9 +971,14 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
             Notification::make()
                 ->title(__('Backup restored'))
-                ->body(__('Database has been restored from :file', ['file' => basename($filename)]))
+                ->body(__('Database :connection has been restored from :file', [
+                    'connection' => $connection,
+                    'file' => basename($filename),
+                ]))
                 ->success()
                 ->send();
+
+            $this->cancelRestore();
         } catch (Throwable $e) {
             Notification::make()
                 ->title(__('Restore failed'))
@@ -782,8 +990,8 @@ class DatabaseBackup extends Page implements HasForms, HasTable
 
     /**
      * Backup filenames produced by createBackup() embed the connection name as
-     * `backup-{connection}-{timestamp}.{ext}`. Recover it so restore picks the
-     * right driver even when the user has changed default connection since.
+     * `backup-{connection}-{timestamp}.{ext}`. It only pre-selects the target in
+     * the restore form — the operator still confirms it.
      */
     private function detectConnectionFromFilename(string $filename): ?string
     {
@@ -826,17 +1034,23 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             return;
         }
 
-        $backupPath = config('filament-system-tools.backup_path', storage_path('app/backups'));
-        $filepath = $backupPath.DIRECTORY_SEPARATOR.basename($filename);
+        $filepath = $this->resolveBackupPath($filename);
 
-        if (File::exists($filepath)) {
-            File::delete($filepath);
-
+        if ($filepath === null) {
             Notification::make()
-                ->title(__('Backup deleted!'))
-                ->success()
+                ->title(__('Backup not found'))
+                ->danger()
                 ->send();
+
+            return;
         }
+
+        File::delete($filepath);
+
+        Notification::make()
+            ->title(__('Backup deleted!'))
+            ->success()
+            ->send();
     }
 
     protected function getHeaderActions(): array
@@ -844,21 +1058,5 @@ class DatabaseBackup extends Page implements HasForms, HasTable
         return [
             $this->createBackupAction(),
         ];
-    }
-
-    // ──────────────────────────────────────────────
-    // Helpers
-    // ──────────────────────────────────────────────
-
-    private function formatBytes(int $bytes, int $precision = 2): string
-    {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $i = 0;
-
-        for (; $bytes > 1024 && $i < count($units) - 1; $i++) {
-            $bytes /= 1024;
-        }
-
-        return round($bytes, $precision).' '.$units[$i];
     }
 }

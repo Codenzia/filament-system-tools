@@ -91,30 +91,73 @@
             @if (count($backups) > 0)
                 <div class="space-y-2">
                     @foreach ($backups as $backup)
-                        <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                            <div class="min-w-0 flex-1">
-                                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $backup['name'] }}</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400">{{ $backup['size'] }} · {{ $backup['date'] }}</p>
+                        <div class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                            <div class="flex items-center justify-between">
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $backup['name'] }}</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">{{ $backup['size'] }} · {{ $backup['date'] }}</p>
+                                </div>
+                                <div class="flex items-center gap-1 ms-3 shrink-0">
+                                    @if ($this->canDownloadBackup())
+                                        <x-filament::button size="sm" color="gray" outlined icon="heroicon-o-arrow-down-tray"
+                                            wire:click="downloadBackup('{{ $backup['name'] }}')"
+                                            title="{{ __('Download') }}" />
+                                    @endif
+                                    @if ($this->canRestoreBackup())
+                                        <x-filament::button size="sm" color="warning" outlined icon="heroicon-o-arrow-path"
+                                            wire:click="beginRestore('{{ $backup['name'] }}')"
+                                            title="{{ __('Restore') }}" />
+                                    @endif
+                                    @if ($this->canDeleteBackup())
+                                        <x-filament::button size="sm" color="danger" outlined icon="heroicon-o-trash"
+                                            wire:click="deleteBackup('{{ $backup['name'] }}')"
+                                            wire:confirm="{{ __('Are you sure you want to delete this backup?') }}"
+                                            title="{{ __('Delete') }}" />
+                                    @endif
+                                </div>
                             </div>
-                            <div class="flex items-center gap-1 ms-3 shrink-0">
-                                @if ($this->canDownloadBackup())
-                                    <x-filament::button size="sm" color="gray" outlined icon="heroicon-o-arrow-down-tray"
-                                        wire:click="downloadBackup('{{ $backup['name'] }}')"
-                                        title="{{ __('Download') }}" />
-                                @endif
-                                @if ($this->canRestoreBackup())
-                                    <x-filament::button size="sm" color="warning" outlined icon="heroicon-o-arrow-path"
-                                        wire:click="restoreBackup('{{ $backup['name'] }}')"
-                                        wire:confirm="{{ __('This will overwrite your current database with this backup. Are you sure?') }}"
-                                        title="{{ __('Restore') }}" />
-                                @endif
-                                @if ($this->canDeleteBackup())
-                                    <x-filament::button size="sm" color="danger" outlined icon="heroicon-o-trash"
-                                        wire:click="deleteBackup('{{ $backup['name'] }}')"
-                                        wire:confirm="{{ __('Are you sure you want to delete this backup?') }}"
-                                        title="{{ __('Delete') }}" />
-                                @endif
-                            </div>
+
+                            @if ($restoreFile === $backup['name'])
+                                <div class="mt-3 space-y-3 border-t border-gray-200 dark:border-gray-600 pt-3">
+                                    <p class="text-sm text-danger-600 dark:text-danger-400">
+                                        {{ __('Restoring overwrites every table in the target database. Choose the target and type its name to continue.') }}
+                                    </p>
+
+                                    <div class="grid gap-3 sm:grid-cols-2">
+                                        <label class="block">
+                                            <span class="text-xs font-medium text-gray-700 dark:text-gray-300">{{ __('Target connection') }}</span>
+                                            <select wire:model.live="restoreConnection"
+                                                class="fi-input mt-1 block w-full rounded-lg border-gray-300 text-sm shadow-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100">
+                                                <option value="">{{ __('Select a connection') }}</option>
+                                                @foreach ($this->getConnectionOptions() as $value => $label)
+                                                    <option value="{{ $value }}">{{ $label }}</option>
+                                                @endforeach
+                                            </select>
+                                        </label>
+
+                                        <label class="block">
+                                            <span class="text-xs font-medium text-gray-700 dark:text-gray-300">
+                                                {{ __('Type the connection name to confirm') }}
+                                            </span>
+                                            <input type="text" wire:model.live="restoreConfirmation"
+                                                placeholder="{{ $restoreConnection ?? __('Select a connection first') }}"
+                                                class="fi-input mt-1 block w-full rounded-lg border-gray-300 text-sm shadow-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100" />
+                                        </label>
+                                    </div>
+
+                                    <div class="flex items-center gap-2">
+                                        <x-filament::button size="sm" color="danger" icon="heroicon-o-arrow-path"
+                                            wire:click="restoreBackup"
+                                            wire:loading.attr="disabled"
+                                            :disabled="blank($restoreConnection) || trim($restoreConfirmation) !== $restoreConnection">
+                                            {{ __('Restore into :connection', ['connection' => $restoreConnection ?: __('target')]) }}
+                                        </x-filament::button>
+                                        <x-filament::button size="sm" color="gray" outlined wire:click="cancelRestore">
+                                            {{ __('Cancel') }}
+                                        </x-filament::button>
+                                    </div>
+                                </div>
+                            @endif
                         </div>
                     @endforeach
                 </div>

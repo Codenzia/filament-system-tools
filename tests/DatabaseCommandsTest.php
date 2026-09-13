@@ -21,6 +21,21 @@ function cmdsCommand(PendingProcess $p): string
     return is_array($p->command) ? implode(' ', $p->command) : (string) $p->command;
 }
 
+/** Helper: fake a dump producer that writes the work file the exporter verifies. */
+function cmdsFakeDumpProducer(string $finalPath, bool $gzip = false): void
+{
+    $contents = '-- dump
+CREATE TABLE t (id INTEGER);
+';
+    $payload = $gzip ? (string) gzencode($contents) : $contents;
+
+    Process::fake(function () use ($finalPath, $payload) {
+        file_put_contents($finalPath.'.part', $payload);
+
+        return Process::result('');
+    });
+}
+
 beforeEach(function () {
     config()->set('database.connections.test_mysql', [
         'driver' => 'mysql',
@@ -36,7 +51,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
-    foreach (['cli-export.sql', 'cli-export.sql.gz', 'cli-import.sql'] as $name) {
+    foreach (['cli-export.sql', 'cli-export.sql.gz', 'cli-export.sql.part', 'cli-export.sql.gz.part', 'cli-import.sql'] as $name) {
         $path = cmdsTmp($name);
         if (File::exists($path)) {
             File::delete($path);
@@ -45,9 +60,8 @@ afterEach(function () {
 });
 
 it('db:export runs the export and reports the path', function () {
-    Process::fake();
-
     $exportPath = cmdsTmp('cli-export.sql');
+    cmdsFakeDumpProducer($exportPath);
 
     $this->artisan('db:export', [
         '--connection' => 'test_mysql',
@@ -60,14 +74,13 @@ it('db:export runs the export and reports the path', function () {
         $cmd = cmdsCommand($p);
 
         return str_contains($cmd, 'mysqldump')
-            && str_contains($cmd, '> '.cmdsArg($exportPath));
+            && str_contains($cmd, '> '.cmdsArg($exportPath.'.part'));
     });
 });
 
 it('db:export auto-appends .gz when --gzip is set with a non-gz path', function () {
-    Process::fake();
-
     $exportPath = cmdsTmp('cli-export.sql');
+    cmdsFakeDumpProducer($exportPath.'.gz', gzip: true);
 
     $this->artisan('db:export', [
         '--connection' => 'test_mysql',
@@ -77,11 +90,11 @@ it('db:export auto-appends .gz when --gzip is set with a non-gz path', function 
         ->expectsOutputToContain('Database exported to: '.$exportPath.'.gz')
         ->assertExitCode(0);
 
-    Process::assertRan(fn (PendingProcess $p) => str_contains(cmdsCommand($p), '| gzip -c'));
+    Process::assertRan(fn (PendingProcess $p) => str_contains(cmdsCommand($p), '| '.cmdsArg('gzip').' -c'));
 });
 
 it('db:export forwards --table options to the service', function () {
-    Process::fake();
+    cmdsFakeDumpProducer(cmdsTmp('cli-export.sql'));
 
     $this->artisan('db:export', [
         '--connection' => 'test_mysql',

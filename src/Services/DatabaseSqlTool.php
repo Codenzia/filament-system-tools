@@ -40,10 +40,18 @@ class DatabaseSqlTool
 
         File::ensureDirectoryExists(dirname($path));
 
+        // Dump into a work file so a failed or truncated run never appears in the
+        // backup listing as a usable artifact; only a verified dump is promoted.
+        $workPath = $path.'.part';
+
+        if (File::exists($workPath)) {
+            File::delete($workPath);
+        }
+
         $command = $this->buildExportCommand(
             driver: $driver,
             config: $config,
-            path: $path,
+            path: $workPath,
             gzip: $gzip,
             tables: $tables,
         );
@@ -52,6 +60,8 @@ class DatabaseSqlTool
         $result = $process->run($command);
 
         if (! $result->successful()) {
+            $this->discard($workPath);
+
             throw new RuntimeException(
                 $this->formatProcessFailureMessage(
                     driver: $driver,
@@ -61,6 +71,20 @@ class DatabaseSqlTool
                 ),
             );
         }
+
+        try {
+            $this->assertUsableDump($workPath, $gzip);
+        } catch (RuntimeException $e) {
+            $this->discard($workPath);
+
+            throw $e;
+        }
+
+        if (File::exists($path)) {
+            File::delete($path);
+        }
+
+        File::move($workPath, $path);
 
         return $path;
     }
@@ -82,6 +106,10 @@ class DatabaseSqlTool
         $config = $this->getConnectionConfig($connection);
         $driver = (string) $config['driver'];
 
+        // Refuse an unreadable/empty artifact before it reaches a database
+        // client that would happily report success on an empty stream.
+        $this->assertUsableDump($path, Str::endsWith($path, '.gz'));
+
         $command = $this->buildImportCommand(
             driver: $driver,
             config: $config,
@@ -100,6 +128,67 @@ class DatabaseSqlTool
                     fallbackMessage: 'Database import failed.',
                 ),
             );
+        }
+    }
+
+    /**
+     * A dump is only usable when the producer actually wrote something: a
+     * pipeline whose first stage failed still leaves a well-formed but empty
+     * gzip file behind, and the compressor exits successfully.
+     */
+    protected function assertUsableDump(string $path, bool $gzip): void
+    {
+        clearstatcache(true, $path);
+
+        if (! File::exists($path) || File::size($path) === 0) {
+            throw new RuntimeException("The dump [{$path}] is empty — the database client produced no output.");
+        }
+
+        if (! $gzip) {
+            $handle = @fopen($path, 'rb');
+
+            if ($handle === false) {
+                throw new RuntimeException("The dump [{$path}] could not be read.");
+            }
+
+            $head = (string) fread($handle, 4096);
+            fclose($handle);
+
+            if (trim($head) === '') {
+                throw new RuntimeException("The dump [{$path}] contains no SQL.");
+            }
+
+            return;
+        }
+
+        $handle = @fopen($path, 'rb');
+
+        if ($handle === false) {
+            throw new RuntimeException("The dump [{$path}] could not be read.");
+        }
+
+        $magic = (string) fread($handle, 2);
+        fseek($handle, -4, SEEK_END);
+        $trailer = (string) fread($handle, 4);
+        fclose($handle);
+
+        if ($magic !== "\x1f\x8b") {
+            throw new RuntimeException("The dump [{$path}] is not a valid gzip archive.");
+        }
+
+        // The gzip trailer records the uncompressed size; zero means the
+        // compressor received nothing to compress.
+        $unpacked = unpack('V', $trailer);
+
+        if ($unpacked === false || (int) $unpacked[1] === 0) {
+            throw new RuntimeException("The dump [{$path}] decompresses to nothing — the database client produced no output.");
+        }
+    }
+
+    protected function discard(string $path): void
+    {
+        if (File::exists($path)) {
+            File::delete($path);
         }
     }
 
@@ -221,13 +310,13 @@ class DatabaseSqlTool
             $dumpDirective .= ' '.implode(' ', $tables);
         }
 
-        $sqlite3 = (string) config('filament-system-tools.dump.sqlite.sqlite3', 'sqlite3');
+        $sqlite3 = $this->shellArg((string) config('filament-system-tools.dump.sqlite.sqlite3', 'sqlite3'));
         $databaseArg = $this->shellArg($database);
         $dumpArg = $this->shellArg($dumpDirective);
         $pathArg = $this->shellArg($path);
 
         if ($gzip) {
-            $gzipBin = (string) config('filament-system-tools.dump.compression.gzip', 'gzip');
+            $gzipBin = $this->shellArg((string) config('filament-system-tools.dump.compression.gzip', 'gzip'));
 
             return "{$sqlite3} {$databaseArg} {$dumpArg} | {$gzipBin} -c > {$pathArg}";
         }
@@ -242,12 +331,14 @@ class DatabaseSqlTool
     {
         $database = $this->sqliteDatabasePath($config);
 
-        $sqlite3 = (string) config('filament-system-tools.dump.sqlite.sqlite3', 'sqlite3');
+        // -bail stops at the first failing statement instead of running the rest
+        // of a broken script and exiting cleanly.
+        $sqlite3 = $this->shellArg((string) config('filament-system-tools.dump.sqlite.sqlite3', 'sqlite3')).' -bail';
         $databaseArg = $this->shellArg($database);
         $pathArg = $this->shellArg($path);
 
         if (Str::endsWith($path, '.gz')) {
-            $gunzipBin = (string) config('filament-system-tools.dump.compression.gunzip', 'gunzip');
+            $gunzipBin = $this->shellArg((string) config('filament-system-tools.dump.compression.gunzip', 'gunzip'));
 
             return "{$gunzipBin} -c {$pathArg} | {$sqlite3} {$databaseArg}";
         }
@@ -284,7 +375,7 @@ class DatabaseSqlTool
             throw new RuntimeException('MySQL export requires username and database.');
         }
 
-        $mysqldumpBin = (string) config('filament-system-tools.dump.mysql.mysqldump', 'mysqldump');
+        $mysqldumpBin = $this->shellArg((string) config('filament-system-tools.dump.mysql.mysqldump', 'mysqldump'));
 
         $parts = [
             $mysqldumpBin,
@@ -305,7 +396,7 @@ class DatabaseSqlTool
         $pathArg = $this->shellArg($path);
 
         if ($gzip) {
-            $gzipBin = (string) config('filament-system-tools.dump.compression.gzip', 'gzip');
+            $gzipBin = $this->shellArg((string) config('filament-system-tools.dump.compression.gzip', 'gzip'));
 
             return "{$cmd} | {$gzipBin} -c > {$pathArg}";
         }
@@ -327,7 +418,7 @@ class DatabaseSqlTool
             throw new RuntimeException('MySQL import requires username and database.');
         }
 
-        $mysqlBin = (string) config('filament-system-tools.dump.mysql.mysql', 'mysql');
+        $mysqlBin = $this->shellArg((string) config('filament-system-tools.dump.mysql.mysql', 'mysql'));
 
         $mysql = implode(' ', [
             $mysqlBin,
@@ -340,7 +431,7 @@ class DatabaseSqlTool
         $pathArg = $this->shellArg($path);
 
         if (Str::endsWith($path, '.gz')) {
-            $gunzipBin = (string) config('filament-system-tools.dump.compression.gunzip', 'gunzip');
+            $gunzipBin = $this->shellArg((string) config('filament-system-tools.dump.compression.gunzip', 'gunzip'));
 
             return "{$gunzipBin} -c {$pathArg} | {$mysql}";
         }
@@ -367,7 +458,7 @@ class DatabaseSqlTool
             throw new RuntimeException('PostgreSQL export requires username and database.');
         }
 
-        $pgDumpBin = (string) config('filament-system-tools.dump.pgsql.pg_dump', 'pg_dump');
+        $pgDumpBin = $this->shellArg((string) config('filament-system-tools.dump.pgsql.pg_dump', 'pg_dump'));
 
         $cmd = implode(' ', [
             $pgDumpBin,
@@ -380,7 +471,7 @@ class DatabaseSqlTool
         $pathArg = $this->shellArg($path);
 
         if ($gzip) {
-            $gzipBin = (string) config('filament-system-tools.dump.compression.gzip', 'gzip');
+            $gzipBin = $this->shellArg((string) config('filament-system-tools.dump.compression.gzip', 'gzip'));
 
             return "{$cmd} | {$gzipBin} -c > {$pathArg}";
         }
@@ -402,10 +493,13 @@ class DatabaseSqlTool
             throw new RuntimeException('PostgreSQL import requires username and database.');
         }
 
-        $psqlBin = (string) config('filament-system-tools.dump.pgsql.psql', 'psql');
+        $psqlBin = $this->shellArg((string) config('filament-system-tools.dump.pgsql.psql', 'psql'));
 
+        // Without ON_ERROR_STOP psql runs to the end of a broken script and
+        // still exits 0, which would be reported as a successful restore.
         $psql = implode(' ', [
             $psqlBin,
+            '--set='.$this->shellArg('ON_ERROR_STOP=1'),
             '--host='.$this->shellArg($host),
             '--port='.$this->shellArg($port),
             '--username='.$this->shellArg($username),
@@ -415,7 +509,7 @@ class DatabaseSqlTool
         $pathArg = $this->shellArg($path);
 
         if (Str::endsWith($path, '.gz')) {
-            $gunzipBin = (string) config('filament-system-tools.dump.compression.gunzip', 'gunzip');
+            $gunzipBin = $this->shellArg((string) config('filament-system-tools.dump.compression.gunzip', 'gunzip'));
 
             return "{$gunzipBin} -c {$pathArg} | {$psql}";
         }

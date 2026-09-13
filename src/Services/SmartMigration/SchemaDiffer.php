@@ -151,7 +151,7 @@ class SchemaDiffer
     private function normalizeTableNames(array $tables): array
     {
         return array_values(array_map(
-            fn (string $t): string => str_contains($t, '.') ? substr($t, strrpos($t, '.') + 1) : $t,
+            fn (string $t): string => TableName::strip($t),
             $tables,
         ));
     }
