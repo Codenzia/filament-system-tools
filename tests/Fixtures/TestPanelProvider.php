@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Codenzia\FilamentSystemTools\Tests\Fixtures;
 
+use Codenzia\FilamentSystemTools\Pages\DatabaseBackup;
 use Filament\Panel;
 use Filament\PanelProvider;
 
@@ -18,6 +19,7 @@ class TestPanelProvider extends PanelProvider
         return $panel
             ->default()
             ->id('testing')
-            ->path('testing');
+            ->path('testing')
+            ->pages([DatabaseBackup::class]);
     }
 }

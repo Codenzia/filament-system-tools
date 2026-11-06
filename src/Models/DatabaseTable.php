@@ -23,7 +23,7 @@ class DatabaseTable extends Model
     public function getTable(): string
     {
         return match ((string) config('database.default')) {
-            'mysql', 'mariadb' => 'information_schema.tables',
+            'mysql', 'mariadb' => 'database_tables',
             default => 'sqlite_master',
         };
     }
@@ -44,13 +44,18 @@ class DatabaseTable extends Model
             // Pull approximate row counts and on-disk size in the same
             // information_schema query, avoiding a SELECT COUNT(*) and a
             // separate size query per table (N+1) when listing tables.
-            return parent::newQuery()
+            $tables = $this->getConnection()->table('information_schema.tables')
                 ->select(DB::raw('TABLE_NAME as name'))
                 ->addSelect(DB::raw('TABLE_ROWS as table_rows'))
                 ->addSelect(DB::raw('(DATA_LENGTH + INDEX_LENGTH) as table_size'))
+                ->addSelect('TABLE_ROWS as rows')
+                ->addSelect(DB::raw('(DATA_LENGTH + INDEX_LENGTH) as size'))
                 ->where('TABLE_SCHEMA', $database)
                 ->where('TABLE_TYPE', 'BASE TABLE')
                 ->whereNotIn('TABLE_NAME', $excludedTables);
+
+            // Filament qualifies the primary key and sort columns with the model table.
+            return parent::newQuery()->fromSub($tables, $this->getTable());
         }
 
         return parent::newQuery()
