@@ -5,6 +5,13 @@ All notable changes to `codenzia/filament-system-tools` will be documented in th
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- MySQL/MariaDB backup table metadata exposes qualified aliases for searching,
+  sorting and selecting records, while preserving preloaded row counts and sizes.
+- Database backup size formatting accepts numeric strings returned by PDO.
+
 ## [0.3.2] - 2026-09-13
 
 ### Fixed

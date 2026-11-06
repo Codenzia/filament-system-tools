@@ -196,7 +196,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
             [$database, $table]
         );
 
-        return Bytes::format($result[0]->size ?? 0);
+        return Bytes::format((int) ($result[0]->size ?? 0));
     }
 
     // ──────────────────────────────────────────────
@@ -217,7 +217,7 @@ class DatabaseBackup extends Page implements HasForms, HasTable
                 'SELECT SUM(data_length + index_length) as size FROM information_schema.tables WHERE table_schema = ?',
                 [$database]
             );
-            $size = Bytes::format($result[0]->size ?? 0);
+            $size = Bytes::format((int) ($result[0]->size ?? 0));
             $tables = DB::select(
                 'SELECT table_name as name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name',
                 [$database]
